@@ -311,7 +311,9 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
     try:
         sheets = get_tournament_sheets(tournament['url'], force_refresh=force_refresh)
         current, pending = get_player_matches(sheets, player, week)
-        full_msg = f"**🏆 {tournament['name']}**\n"
+        messages = []
+
+        msg_current = f"**🏆 {tournament['name']}**\n"
         if current:
             rows = []
             for m in current:
@@ -325,10 +327,13 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
                 else:
                     player_disp, opponent_disp = player_hero, opponent
                 rows.append([m['division'], player_disp, opponent_disp])
-            full_msg += f"```\n{format_table(rows, ['Division', 'Your Hero', 'Opponent'], f'Matches in week {week}')}\n```"
+            msg_current += f"```\n{format_table(rows, ['Division', 'Your Hero', 'Opponent'], f'Matches in week {week}')}\n```"
         else:
-            full_msg += "📅 No matches found for this week.\n"
+            msg_current += "📅 No matches found for this week.\n"
+        messages.append(msg_current)
+
         if pending:
+            msg_pending = f"**⏳ Pending matches from previous weeks:**\n"
             rows = []
             for m in pending:
                 if player in m['player1']:
@@ -341,8 +346,10 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
                 else:
                     player_disp, opponent_disp = player_hero, opponent
                 rows.append([m['week'], m['division'], player_disp, opponent_disp])
-            full_msg += f"\n**⏳ Pending matches from previous weeks:**\n```\n{format_table(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], 'Pending')}\n```"
-        return full_msg, None
+            msg_pending += f"```\n{format_table(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], 'Pending')}\n```"
+            messages.append(msg_pending)
+
+        return messages, None
     except Exception as e:
         logger.error(f"Error building matches message for {tournament['name']}: {e}", exc_info=True)
         return None, f"Error in {tournament['name']}: {e}"

@@ -68,12 +68,13 @@ class TournamentCommands(commands.Cog):
                     tourney.get('builds_sheet'),
                     tourney.get('builds_mapping')
                 )
-                msg, err = build_matches_message(tourney, player, week, force_refresh=False, builds=builds)
+                messages, err = build_matches_message(tourney, player, week, force_refresh=False, builds=builds)
                 if err:
                     await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
-                elif msg:
-                    for chunk in split_message(msg):
-                        await ctx.send(chunk)
+                elif messages:
+                    for msg in messages:
+                        for chunk in split_message(msg):
+                            await ctx.send(chunk)
             except Exception as e:
                 logger.error(f"Unexpected error in matches_command ({tourney['name']}): {e}", exc_info=True)
                 await ctx.send(f"❌ Unexpected error in {tourney['name']}: {str(e)}")
@@ -148,21 +149,18 @@ class TournamentCommands(commands.Cog):
                     tourney.get('builds_sheet'),
                     tourney.get('builds_mapping')
                 )
-                msg, err = build_matches_message(tourney, player, week, force_refresh=False, builds=builds)
+                messages, err = build_matches_message(tourney, player, week, force_refresh=False, builds=builds)
                 if err:
                     await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
-                    continue
-                if msg:
-                    for chunk in split_message(msg):
-                        success = await send_dm_to_player(self.bot, discord_id, chunk)
-                        if not success:
-                            await ctx.send(
-                                f"⚠️ {mention}, I couldn't send you a DM for **{tourney['name']}**.\n"
-                                f"👉 Please enable DMs from server members."
-                            )
-                            break
-                    else:
-                        success_count += 1
+                elif messages:
+                    for msg in messages:
+                        for chunk in split_message(msg):
+                            success = await send_dm_to_player(self.bot, discord_id, chunk)
+                            if not success:
+                                await ctx.send(f"⚠️ Could not DM {player} for {tourney['name']}.")
+                                break
+                        else:
+                            success_count += 1
             except Exception as e:
                 logger.error(f"Error in sendto_command ({tourney['name']}): {e}", exc_info=True)
                 await ctx.send(f"❌ Unexpected error in {tourney['name']}: {str(e)}")
