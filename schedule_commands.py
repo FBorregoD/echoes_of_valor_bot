@@ -1,0 +1,320 @@
+"""
+schedule_commands.py — Admin commands to manage scheduled tasks.
+
+Commands:
+  !schedule add <action> <weekday> <HH:MM> [tz=UTC] [week=default] [tournament=MA] [thread=<id>]
+  !schedule list
+  !schedule remove <id>
+  !schedule info <id>
+  !schedule actions        — list available actions and their params
+
+Weekday names accepted: monday/mon, tuesday/tue, … sunday/sun  (or 0–6)
+
+Examples:
+  !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4
+  !schedule add notify_all friday 18:30 tz=UTC week=default
+  !schedule remove 3
+  !schedule list
+"""
+
+import discord
+from discord.ext import commands
+import logging
+
+from scheduler import (
+    add_task, remove_task, list_tasks, get_task,
+    format_task, REGISTERED_ACTIONS, WEEKDAY_NAMES, init_db
+)
+
+logger = logging.getLogger(__name__)
+
+WEEKDAY_MAP = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+    **{str(i): i for i in range(7)},
+}
+
+
+def _parse_kwargs(tokens: list[str]) -> dict[str, str]:
+    """Parse key=value tokens into a dict."""
+    result = {}
+    for token in tokens:
+        if "=" in token:
+            k, _, v = token.partition("=")
+            result[k.strip().lower()] = v.strip()
+    return result
+
+
+class ScheduleCommands(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        init_db()
+
+    @commands.has_permissions(administrator=True)
+    @commands.group(name='schedule', invoke_without_command=True)
+    async def schedule_group(self, ctx):
+        """Base command — shows usage if no subcommand given."""
+        embed = discord.Embed(
+            title="🗓️ Schedule Commands",
+            description="Manage recurring bot tasks.",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(
+            name="Add a task",
+            value=(
+                "`!schedule add <action> <weekday> <HH:MM> [options]`\n"
+                "Options: `tz=UTC` `week=default` `tournament=MA` `channel=<id>` `thread=<id>`\n"
+                "Example: `!schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA`"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="List tasks",
+            value="`!schedule list`",
+            inline=False
+        )
+        embed.add_field(
+            name="Remove a task",
+            value="`!schedule remove <id>`",
+            inline=False
+        )
+        embed.add_field(
+            name="Task details",
+            value="`!schedule info <id>`",
+            inline=False
+        )
+        embed.add_field(
+            name="Available actions",
+            value="`!schedule actions`",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # !schedule add
+    # ------------------------------------------------------------------
+    @commands.has_permissions(administrator=True)
+    @schedule_group.command(name='add')
+    async def schedule_add(self, ctx, action: str, weekday_str: str, time_str: str, *args):
+        """
+        !schedule add <action> <weekday> <HH:MM> [tz=UTC] [week=default] [tournament=MA] [channel=<id>] [thread=<id>]
+        """
+        # Validate action
+        if action not in REGISTERED_ACTIONS:
+            known = ", ".join(f"`{k}`" for k in REGISTERED_ACTIONS)
+            await ctx.send(f"❌ Unknown action `{action}`. Available: {known}")
+            return
+
+        # Parse weekday
+        weekday = WEEKDAY_MAP.get(weekday_str.lower())
+        if weekday is None:
+            await ctx.send(
+                f"❌ Invalid weekday `{weekday_str}`. "
+                f"Use: monday, tuesday, … sunday (or 0–6)."
+            )
+            return
+
+        # Parse time
+        try:
+            h, m = map(int, time_str.split(":"))
+            assert 0 <= h <= 23 and 0 <= m <= 59
+        except (ValueError, AssertionError):
+            await ctx.send("❌ Invalid time format. Use `HH:MM` (e.g. `09:30`).")
+            return
+
+        # Parse optional key=value args
+        opts = _parse_kwargs(list(args))
+
+        tz = opts.get("tz", "UTC")
+        # Quick timezone validation
+        try:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+            ZoneInfo(tz)
+        except ZoneInfoNotFoundError:
+            await ctx.send(
+                f"❌ Unknown timezone `{tz}`. "
+                f"Use a valid IANA timezone, e.g. `Europe/Madrid`, `UTC`, `America/New_York`."
+            )
+            return
+
+        # Channel: defaults to current channel
+        channel_id_raw = opts.get("channel")
+        if channel_id_raw:
+            try:
+                channel_id = int(channel_id_raw)
+            except ValueError:
+                await ctx.send("❌ `channel` must be a numeric Discord channel ID.")
+                return
+        else:
+            channel_id = ctx.channel.id
+
+        # Thread (optional)
+        thread_id = None
+        thread_id_raw = opts.get("thread")
+        if thread_id_raw:
+            try:
+                thread_id = int(thread_id_raw)
+            except ValueError:
+                await ctx.send("❌ `thread` must be a numeric Discord thread ID.")
+                return
+
+        # Build action params (everything except scheduler-level opts)
+        reserved = {"tz", "channel", "thread"}
+        action_params = {k: v for k, v in opts.items() if k not in reserved}
+
+        # Defaults per action
+        if action == "post_divisions":
+            action_params.setdefault("week", "default")
+            action_params.setdefault("tournament", "MA")
+        elif action == "notify_all":
+            action_params.setdefault("week", "default")
+
+        task_id = add_task(
+            action=action,
+            params=action_params,
+            guild_id=ctx.guild.id,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            weekday=weekday,
+            hour=h,
+            minute=m,
+            tz=tz,
+            created_by=ctx.author.id,
+        )
+
+        thread_note = f" in thread `{thread_id}`" if thread_id else ""
+        embed = discord.Embed(
+            title="✅ Scheduled task created",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="ID", value=str(task_id), inline=True)
+        embed.add_field(name="Action", value=f"`{action}`", inline=True)
+        embed.add_field(
+            name="When",
+            value=f"{WEEKDAY_NAMES[weekday]} at {h:02d}:{m:02d} ({tz})",
+            inline=False
+        )
+        embed.add_field(
+            name="Destination",
+            value=f"Channel `{channel_id}`{thread_note}",
+            inline=False
+        )
+        embed.add_field(
+            name="Params",
+            value=", ".join(f"`{k}={v}`" for k, v in action_params.items()) or "—",
+            inline=False
+        )
+        embed.set_footer(text=f"Use !schedule remove {task_id} to cancel it.")
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # !schedule list
+    # ------------------------------------------------------------------
+    @commands.has_permissions(administrator=True)
+    @schedule_group.command(name='list')
+    async def schedule_list(self, ctx):
+        rows = list_tasks(guild_id=ctx.guild.id)
+        if not rows:
+            await ctx.send("📭 No scheduled tasks for this server.")
+            return
+
+        embed = discord.Embed(
+            title=f"🗓️ Scheduled Tasks — {ctx.guild.name}",
+            color=discord.Color.blurple()
+        )
+        for row in rows:
+            params_str = ", ".join(
+                f"{k}={v}" for k, v in __import__('json').loads(row["params"]).items()
+            ) or "—"
+            thread_str = f" · thread `{row['thread_id']}`" if row["thread_id"] else ""
+            value = (
+                f"**Action:** `{row['action']}`\n"
+                f"**When:** {WEEKDAY_NAMES[row['weekday']]} {row['hour']:02d}:{row['minute']:02d} ({row['tz']})\n"
+                f"**Channel:** `{row['channel_id']}`{thread_str}\n"
+                f"**Params:** {params_str}\n"
+                f"**Last run:** {row['last_run'] or 'never'}"
+            )
+            embed.add_field(name=f"ID {row['id']}", value=value, inline=False)
+
+        embed.set_footer(text="Use !schedule remove <id> to delete a task.")
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # !schedule remove
+    # ------------------------------------------------------------------
+    @commands.has_permissions(administrator=True)
+    @schedule_group.command(name='remove')
+    async def schedule_remove(self, ctx, task_id: int):
+        row = get_task(task_id)
+        if not row:
+            await ctx.send(f"❌ No task found with ID `{task_id}`.")
+            return
+        if row["guild_id"] != ctx.guild.id:
+            await ctx.send("❌ That task doesn't belong to this server.")
+            return
+        remove_task(task_id)
+        await ctx.send(f"🗑️ Task `{task_id}` (`{row['action']}`) removed successfully.")
+
+    # ------------------------------------------------------------------
+    # !schedule info
+    # ------------------------------------------------------------------
+    @commands.has_permissions(administrator=True)
+    @schedule_group.command(name='info')
+    async def schedule_info(self, ctx, task_id: int):
+        row = get_task(task_id)
+        if not row:
+            await ctx.send(f"❌ No task found with ID `{task_id}`.")
+            return
+        if row["guild_id"] != ctx.guild.id:
+            await ctx.send("❌ That task doesn't belong to this server.")
+            return
+        embed = discord.Embed(
+            title=f"🗓️ Task {task_id} — `{row['action']}`",
+            description=REGISTERED_ACTIONS.get(row["action"], {}).get("description", ""),
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="Weekday", value=WEEKDAY_NAMES[row["weekday"]], inline=True)
+        embed.add_field(name="Time", value=f"{row['hour']:02d}:{row['minute']:02d}", inline=True)
+        embed.add_field(name="Timezone", value=row["tz"], inline=True)
+        embed.add_field(name="Guild ID", value=str(row["guild_id"]), inline=True)
+        embed.add_field(name="Channel ID", value=str(row["channel_id"]), inline=True)
+        embed.add_field(name="Thread ID", value=str(row["thread_id"]) if row["thread_id"] else "—", inline=True)
+        import json
+        params = json.loads(row["params"])
+        embed.add_field(
+            name="Params",
+            value="\n".join(f"`{k}` = `{v}`" for k, v in params.items()) or "—",
+            inline=False
+        )
+        embed.add_field(name="Created by", value=f"<@{row['created_by']}>", inline=True)
+        embed.add_field(name="Last run", value=row["last_run"] or "never", inline=True)
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # !schedule actions
+    # ------------------------------------------------------------------
+    @commands.has_permissions(administrator=True)
+    @schedule_group.command(name='actions')
+    async def schedule_actions(self, ctx):
+        embed = discord.Embed(
+            title="⚙️ Available Scheduled Actions",
+            color=discord.Color.gold()
+        )
+        for key, info in REGISTERED_ACTIONS.items():
+            params_doc = ", ".join(f"`{p}`" for p in info.get("params", [])) or "—"
+            embed.add_field(
+                name=f"`{key}`",
+                value=f"{info['description']}\nParams: {params_doc}",
+                inline=False
+            )
+        embed.set_footer(text="Use !schedule add <action> ... to create a task.")
+        await ctx.send(embed=embed)
+
+
+async def setup_schedule(bot: commands.Bot):
+    await bot.add_cog(ScheduleCommands(bot))
