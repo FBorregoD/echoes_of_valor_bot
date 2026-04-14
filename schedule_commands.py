@@ -17,6 +17,7 @@ Examples:
   !schedule list
 """
 
+import re
 import discord
 from discord.ext import commands
 import logging
@@ -41,6 +42,24 @@ WEEKDAY_MAP = {
 }
 
 
+def _parse_interval(value: str) -> int | None:
+    """Parse '30m', '2h', '1d', '1h30m' etc. into total minutes. Returns None on failure."""
+    value = value.strip().lower()
+    total = 0
+    pattern = re.findall(r'(\d+)([dhm])', value)
+    if not pattern:
+        return None
+    for amount, unit in pattern:
+        n = int(amount)
+        if unit == 'd':
+            total += n * 1440
+        elif unit == 'h':
+            total += n * 60
+        elif unit == 'm':
+            total += n
+    return total if total > 0 else None
+
+
 def _parse_kwargs(tokens: list[str]) -> dict[str, str]:
     """Parse key=value tokens into a dict."""
     result = {}
@@ -49,6 +68,16 @@ def _parse_kwargs(tokens: list[str]) -> dict[str, str]:
             k, _, v = token.partition("=")
             result[k.strip().lower()] = v.strip()
     return result
+
+
+def _when_display(row) -> str:
+    """Format the schedule timing for display."""
+    if row["interval_minutes"]:
+        from scheduler import _format_interval
+        return _format_interval(row["interval_minutes"])
+    if row["weekday"] is not None:
+        return f"{WEEKDAY_NAMES[row['weekday']]} {row['hour']:02d}:{row['minute']:02d} ({row['tz']})"
+    return f"daily at {row['hour']:02d}:{row['minute']:02d} ({row['tz']})"
 
 
 class ScheduleCommands(commands.Cog):
@@ -101,9 +130,12 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     @is_bot_admin()
     @schedule_group.command(name='add')
-    async def schedule_add(self, ctx, action: str, weekday_str: str, time_str: str, *args):
+    async def schedule_add(self, ctx, action: str, when_str: str, *args):
         """
-        !schedule add <action> <weekday> <HH:MM> [tz=UTC] [week=default] [tournament=MA] [channel=<id>] [thread=<id>]
+        Two modes:
+          !schedule add <action> every=<interval> [options]   — interval (e.g. every=30m, every=2h, every=1d)
+          !schedule add <action> <weekday> <HH:MM> [options]  — weekly at a fixed day/time
+        Options: tz=UTC  week=default  tournament=MA  channel=<id>  thread=<id>
         """
         # Validate action
         if action not in REGISTERED_ACTIONS:
@@ -111,25 +143,50 @@ class ScheduleCommands(commands.Cog):
             await ctx.send(f"❌ Unknown action `{action}`. Available: {known}")
             return
 
-        # Parse weekday
-        weekday = WEEKDAY_MAP.get(weekday_str.lower())
-        if weekday is None:
-            await ctx.send(
-                f"❌ Invalid weekday `{weekday_str}`. "
-                f"Use: monday, tuesday, … sunday (or 0–6)."
-            )
-            return
+        # Detect mode: interval vs weekly
+        # when_str is either "every=2h" / "30m" (interval) or a weekday name
+        interval_minutes = None
+        weekday = None
+        h, m = 0, 0
+        remaining_args = list(args)
 
-        # Parse time
-        try:
-            h, m = map(int, time_str.split(":"))
-            assert 0 <= h <= 23 and 0 <= m <= 59
-        except (ValueError, AssertionError):
-            await ctx.send("❌ Invalid time format. Use `HH:MM` (e.g. `09:30`).")
-            return
+        # Check if it's an interval: when_str starts with "every=" or looks like "30m"/"2h"
+        interval_raw = None
+        if when_str.lower().startswith("every="):
+            interval_raw = when_str[6:]
+        elif re.match(r'^\d+[dhm]', when_str.lower()):
+            interval_raw = when_str
+
+        if interval_raw:
+            interval_minutes = _parse_interval(interval_raw)
+            if not interval_minutes:
+                await ctx.send(
+                    f"❌ Invalid interval `{interval_raw}`. "
+                    f"Use formats like `30m`, `2h`, `1d`, `1h30m`."
+                )
+                return
+        else:
+            # Weekly mode: when_str = weekday, first remaining arg = HH:MM
+            weekday = WEEKDAY_MAP.get(when_str.lower())
+            if weekday is None:
+                await ctx.send(
+                    f"❌ Invalid weekday or interval `{when_str}`. "
+                    f"Use a weekday (e.g. `monday`) or an interval (e.g. `every=2h`, `30m`)."
+                )
+                return
+            if not remaining_args:
+                await ctx.send("❌ Weekly mode requires a time: `!schedule add <action> <weekday> <HH:MM>`")
+                return
+            time_str = remaining_args.pop(0)
+            try:
+                h, m = map(int, time_str.split(":"))
+                assert 0 <= h <= 23 and 0 <= m <= 59
+            except (ValueError, AssertionError):
+                await ctx.send("❌ Invalid time format. Use `HH:MM` (e.g. `09:30`).")
+                return
 
         # Parse optional key=value args
-        opts = _parse_kwargs(list(args))
+        opts = _parse_kwargs(remaining_args)
 
         tz = opts.get("tz", "UTC")
         # Quick timezone validation
@@ -199,6 +256,7 @@ class ScheduleCommands(commands.Cog):
             tz=tz,
             created_by=ctx.author.id,
             current_week=current_week,
+            interval_minutes=interval_minutes,
         )
 
         thread_note = f" in thread `{thread_id}`" if thread_id else ""
@@ -213,9 +271,14 @@ class ScheduleCommands(commands.Cog):
         )
         embed.add_field(name="ID", value=str(task_id), inline=True)
         embed.add_field(name="Action", value=f"`{action}`", inline=True)
+        if interval_minutes:
+            from scheduler import _format_interval
+            when_display = f"Every {_format_interval(interval_minutes).replace('every ', '')}"
+        else:
+            when_display = f"{WEEKDAY_NAMES[weekday]} at {h:02d}:{m:02d} ({tz})"
         embed.add_field(
             name="When",
-            value=f"{WEEKDAY_NAMES[weekday]} at {h:02d}:{m:02d} ({tz})",
+            value=when_display,
             inline=False
         )
         embed.add_field(
@@ -261,7 +324,7 @@ class ScheduleCommands(commands.Cog):
                 week_mode_str = f"auto (next: week {cw})"
             value = (
                 f"**Action:** `{row['action']}`\n"
-                f"**When:** {WEEKDAY_NAMES[row['weekday']]} {row['hour']:02d}:{row['minute']:02d} ({row['tz']})\n"
+                f"**When:** {_when_display(row)}\n"
                 f"**Channel:** `{row['channel_id']}`{thread_str}\n"
                 f"**Params:** {params_str}\n"
                 f"**Week mode:** {week_mode_str}\n"
@@ -306,9 +369,13 @@ class ScheduleCommands(commands.Cog):
             description=REGISTERED_ACTIONS.get(row["action"], {}).get("description", ""),
             color=discord.Color.blurple()
         )
-        embed.add_field(name="Weekday", value=WEEKDAY_NAMES[row["weekday"]], inline=True)
-        embed.add_field(name="Time", value=f"{row['hour']:02d}:{row['minute']:02d}", inline=True)
-        embed.add_field(name="Timezone", value=row["tz"], inline=True)
+        if row["interval_minutes"]:
+            from scheduler import _format_interval
+            embed.add_field(name="Schedule", value=_format_interval(row["interval_minutes"]), inline=True)
+        else:
+            embed.add_field(name="Weekday", value=WEEKDAY_NAMES[row["weekday"]] if row["weekday"] is not None else "—", inline=True)
+            embed.add_field(name="Time", value=f"{row['hour']:02d}:{row['minute']:02d}", inline=True)
+            embed.add_field(name="Timezone", value=row["tz"], inline=True)
         embed.add_field(name="Guild ID", value=str(row["guild_id"]), inline=True)
         embed.add_field(name="Channel ID", value=str(row["channel_id"]), inline=True)
         embed.add_field(name="Thread ID", value=str(row["thread_id"]) if row["thread_id"] else "—", inline=True)
