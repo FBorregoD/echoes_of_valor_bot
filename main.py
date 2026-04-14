@@ -33,7 +33,21 @@ if not BOT_TOKEN:
 # Setup bot
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+# Por esto:
+async def get_prefix(bot, message):
+    # Acepta "!comando" o "@bot !comando" o "@bot comando"
+    mention_prefixes = [f"<@{bot.user.id}> ", f"<@!{bot.user.id}> "]
+    for mention in mention_prefixes:
+        if message.content.startswith(mention):
+            remainder = message.content[len(mention):]
+            # Si tras la mención viene "!comando", quitar el "!"
+            if remainder.startswith(COMMAND_PREFIX):
+                return mention + COMMAND_PREFIX
+            # Si viene "comando" sin "!", añadir prefijo virtual
+            return mention
+    return COMMAND_PREFIX
+
+bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 bot.remove_command('help')
 
 # Expose admin list on the bot object so cogs can access it
@@ -69,14 +83,6 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-    
-    # DEBUG TEMPORAL - borrar después
-    logger.info(f"MSG RECEIVED from {message.author}: '{message.content}' | mentions: {message.mentions}")
-    
-    if bot.user not in message.mentions:
-        return
-
-    logger.debug(f"Mention from {message.author}: {message.content}")
     await bot.process_commands(message)
 
 
