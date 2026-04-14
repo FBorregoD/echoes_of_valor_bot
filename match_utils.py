@@ -390,6 +390,44 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
     return mapping
 
 
+
+def get_max_week(sheets_dict: dict) -> int | None:
+    """Return the highest week number found across all division sheets."""
+    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
+                'format', 'scoresheet', 'arma heroum']
+    max_week = None
+    for sheet_name, df in sheets_dict.items():
+        if any(kw in sheet_name.lower() for kw in excluded):
+            continue
+        for idx, row in df.iterrows():
+            cell = row.iloc[0]
+            if pd.notna(cell) and str(cell).strip().startswith("Week"):
+                w = parse_week_number(str(cell))
+                if w is not None:
+                    max_week = w if max_week is None else max(max_week, w)
+    return max_week
+
+
+def week_has_matches(sheets_dict: dict, week: int) -> bool:
+    """Return True if at least one match row exists for the given week number."""
+    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
+                'format', 'scoresheet', 'arma heroum']
+    for sheet_name, df in sheets_dict.items():
+        if any(kw in sheet_name.lower() for kw in excluded):
+            continue
+        current_week = None
+        for idx, row in df.iterrows():
+            cell = row.iloc[0]
+            if pd.notna(cell) and str(cell).strip().startswith("Week"):
+                current_week = parse_week_number(str(cell))
+            if current_week != week:
+                continue
+            p1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+            p2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+            if p1 or p2:
+                return True
+    return False
+
 async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
     try:
         user = await bot.fetch_user(discord_id)

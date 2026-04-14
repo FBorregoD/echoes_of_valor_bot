@@ -175,6 +175,18 @@ class ScheduleCommands(commands.Cog):
         elif action == "notify_all":
             action_params.setdefault("week", "default")
 
+        # ── Auto-advancing week ──────────────────────────────────────────
+        # If week param is a plain integer (not "default"), store it as
+        # current_week so the scheduler can increment it after each run.
+        # week="default" keeps current_week=None (fixed, no auto-advance).
+        current_week = None
+        week_val = action_params.get("week", "default")
+        if week_val not in ("default", None):
+            try:
+                current_week = int(week_val)
+            except ValueError:
+                pass
+
         task_id = add_task(
             action=action,
             params=action_params,
@@ -186,9 +198,15 @@ class ScheduleCommands(commands.Cog):
             minute=m,
             tz=tz,
             created_by=ctx.author.id,
+            current_week=current_week,
         )
 
         thread_note = f" in thread `{thread_id}`" if thread_id else ""
+        auto_note = (
+            f"Starting at **week {current_week}**, advancing automatically each run."
+            if current_week is not None
+            else "Fixed week (no auto-advance)."
+        )
         embed = discord.Embed(
             title="✅ Scheduled task created",
             color=discord.Color.green()
@@ -210,6 +228,7 @@ class ScheduleCommands(commands.Cog):
             value=", ".join(f"`{k}={v}`" for k, v in action_params.items()) or "—",
             inline=False
         )
+        embed.add_field(name="Week mode", value=auto_note, inline=False)
         embed.set_footer(text=f"Use !schedule remove {task_id} to cancel it.")
         await ctx.send(embed=embed)
 
@@ -233,11 +252,19 @@ class ScheduleCommands(commands.Cog):
                 f"{k}={v}" for k, v in __import__('json').loads(row["params"]).items()
             ) or "—"
             thread_str = f" · thread `{row['thread_id']}`" if row["thread_id"] else ""
+            cw = row["current_week"]
+            if cw is None:
+                week_mode_str = "fixed"
+            elif cw == -1:
+                week_mode_str = "🏁 season complete"
+            else:
+                week_mode_str = f"auto (next: week {cw})"
             value = (
                 f"**Action:** `{row['action']}`\n"
                 f"**When:** {WEEKDAY_NAMES[row['weekday']]} {row['hour']:02d}:{row['minute']:02d} ({row['tz']})\n"
                 f"**Channel:** `{row['channel_id']}`{thread_str}\n"
                 f"**Params:** {params_str}\n"
+                f"**Week mode:** {week_mode_str}\n"
                 f"**Last run:** {row['last_run'] or 'never'}"
             )
             embed.add_field(name=f"ID {row['id']}", value=value, inline=False)
@@ -292,6 +319,14 @@ class ScheduleCommands(commands.Cog):
             value="\n".join(f"`{k}` = `{v}`" for k, v in params.items()) or "—",
             inline=False
         )
+        cw = row["current_week"]
+        if cw is None:
+            cw_display = "fixed (no auto-advance)"
+        elif cw == -1:
+            cw_display = "🏁 Season complete — task will no longer run"
+        else:
+            cw_display = f"Auto-advancing — next run: **week {cw}**"
+        embed.add_field(name="Week mode", value=cw_display, inline=False)
         embed.add_field(name="Created by", value=f"<@{row['created_by']}>", inline=True)
         embed.add_field(name="Last run", value=row["last_run"] or "never", inline=True)
         await ctx.send(embed=embed)

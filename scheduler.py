@@ -55,35 +55,40 @@ def init_db():
     with _get_conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                action      TEXT NOT NULL,
-                params      TEXT NOT NULL DEFAULT '{}',
-                guild_id    INTEGER NOT NULL,
-                channel_id  INTEGER NOT NULL,
-                thread_id   INTEGER,
-                weekday     INTEGER NOT NULL,  -- 0=Mon, 6=Sun
-                hour        INTEGER NOT NULL,
-                minute      INTEGER NOT NULL,
-                tz          TEXT NOT NULL DEFAULT 'UTC',
-                last_run    TEXT,              -- ISO timestamp of last execution
-                created_by  INTEGER NOT NULL
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                action       TEXT NOT NULL,
+                params       TEXT NOT NULL DEFAULT '{}',
+                guild_id     INTEGER NOT NULL,
+                channel_id   INTEGER NOT NULL,
+                thread_id    INTEGER,
+                weekday      INTEGER NOT NULL,  -- 0=Mon, 6=Sun
+                hour         INTEGER NOT NULL,
+                minute       INTEGER NOT NULL,
+                tz           TEXT NOT NULL DEFAULT 'UTC',
+                last_run     TEXT,              -- ISO timestamp of last execution
+                created_by   INTEGER NOT NULL,
+                current_week INTEGER            -- tracks auto-incrementing week (NULL = fixed)
             )
         """)
+        # Migration: add current_week if it doesn't exist yet
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(scheduled_tasks)")]
+        if "current_week" not in cols:
+            conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN current_week INTEGER")
         conn.commit()
     logger.info("Scheduler DB initialised.")
 
 
 def add_task(action: str, params: dict, guild_id: int, channel_id: int,
              thread_id: int | None, weekday: int, hour: int, minute: int,
-             tz: str, created_by: int) -> int:
+             tz: str, created_by: int, current_week: int | None = None) -> int:
     with _get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO scheduled_tasks
                (action, params, guild_id, channel_id, thread_id,
-                weekday, hour, minute, tz, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                weekday, hour, minute, tz, created_by, current_week)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (action, json.dumps(params), guild_id, channel_id, thread_id,
-             weekday, hour, minute, tz, created_by)
+             weekday, hour, minute, tz, created_by, current_week)
         )
         conn.commit()
         return cur.lastrowid
@@ -119,6 +124,14 @@ def update_last_run(task_id: int, ts: str):
     with _get_conn() as conn:
         conn.execute(
             "UPDATE scheduled_tasks SET last_run = ? WHERE id = ?", (ts, task_id)
+        )
+        conn.commit()
+
+
+def update_current_week(task_id: int, week: int | None):
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE scheduled_tasks SET current_week = ? WHERE id = ?", (week, task_id)
         )
         conn.commit()
 
@@ -209,25 +222,40 @@ class SchedulerCog(commands.Cog):
             logger.warning(f"Task {row['id']}: channel/thread not found.")
             return
 
+        # ── Auto-advancing week logic ────────────────────────────────────
+        # If current_week is set, override whatever params["week"] says.
+        # After a successful run we advance by 1; if the next week has no
+        # matches we mark the task as exhausted (current_week = -1) and
+        # notify the channel, then skip execution.
+        effective_params = dict(params)
+        task_id = row["id"]
+        auto_week = row["current_week"]  # None → fixed week, -1 → exhausted
+
+        if auto_week is not None:
+            if auto_week == -1:
+                logger.info(f"Task {task_id}: season finished, skipping.")
+                return
+            effective_params["week"] = str(auto_week)
+
         try:
             action = row["action"]
             if action == "post_divisions":
-                await self._run_post_divisions(destination, params)
+                await self._run_post_divisions(destination, effective_params, task_id=task_id, auto_week=auto_week)
             elif action == "notify_all":
-                await self._run_notify_all(destination, params)
+                await self._run_notify_all(destination, effective_params, task_id=task_id, auto_week=auto_week)
             else:
-                logger.warning(f"Task {row['id']}: unknown action '{action}'.")
+                logger.warning(f"Task {task_id}: unknown action '{action}'.")
         except Exception as e:
-            logger.error(f"Task {row['id']} failed: {e}", exc_info=True)
+            logger.error(f"Task {task_id} failed: {e}", exc_info=True)
             try:
-                await destination.send(f"❌ Scheduled task `{row['action']}` (ID {row['id']}) failed: {e}")
+                await destination.send(f"❌ Scheduled task `{row['action']}` (ID {task_id}) failed: {e}")
             except Exception:
                 pass
 
     # ------------------------------------------------------------------
     # Action implementations
     # ------------------------------------------------------------------
-    async def _run_post_divisions(self, destination, params: dict):
+    async def _run_post_divisions(self, destination, params: dict, task_id: int | None = None, auto_week: int | None = None):
         """Mirrors TournamentCommands.post_divisions but posts to a specific destination."""
         from match_utils import (
             get_tournament_sheets, get_division_matches,
@@ -308,7 +336,23 @@ class SchedulerCog(commands.Cog):
             result += f"\n❌ Errors: {', '.join(error_list)}"
         await destination.send(result)
 
-    async def _run_notify_all(self, destination, params: dict):
+        # ── Advance auto-week ────────────────────────────────────────────
+        if task_id is not None and auto_week is not None:
+            next_week = auto_week + 1
+            from match_utils import week_has_matches
+            if week_has_matches(sheets, next_week):
+                update_current_week(task_id, next_week)
+                logger.info(f"Task {task_id}: advanced to week {next_week}.")
+            else:
+                update_current_week(task_id, -1)
+                await destination.send(
+                    f"🏁 **Season complete!** No matches found for week {next_week}. "
+                    f"Scheduled task `post_divisions` (ID {task_id}) will no longer run automatically. "
+                    f"Use `!schedule remove {task_id}` to clean it up if needed."
+                )
+                logger.info(f"Task {task_id}: no week {next_week} matches — marked as exhausted.")
+
+    async def _run_notify_all(self, destination, params: dict, task_id: int | None = None, auto_week: int | None = None):
         """Mirrors TournamentCommands.notify_all but reports to a specific destination."""
         from match_utils import (
             get_tournament_sheets, get_player_matches,
@@ -394,3 +438,29 @@ class SchedulerCog(commands.Cog):
             await asyncio.sleep(1)
 
         await destination.send(f"✅ DMs sent to {success_count}/{len(players_with_pending)} players.")
+
+        # ── Advance auto-week ────────────────────────────────────────────
+        if task_id is not None and auto_week is not None:
+            next_week = auto_week + 1
+            # Check any tournament for week existence
+            from match_utils import week_has_matches, get_tournament_sheets
+            has_next = False
+            for tourney in self.cog_ref.tournaments:
+                try:
+                    sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                    if week_has_matches(sheets, next_week):
+                        has_next = True
+                        break
+                except Exception:
+                    pass
+            if has_next:
+                update_current_week(task_id, next_week)
+                logger.info(f"Task {task_id}: advanced to week {next_week}.")
+            else:
+                update_current_week(task_id, -1)
+                await destination.send(
+                    f"🏁 **Season complete!** No matches found for week {next_week}. "
+                    f"Scheduled task `notify_all` (ID {task_id}) will no longer run automatically. "
+                    f"Use `!schedule remove {task_id}` to clean it up if needed."
+                )
+                logger.info(f"Task {task_id}: no week {next_week} matches — marked as exhausted.")
