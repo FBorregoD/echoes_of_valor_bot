@@ -21,6 +21,7 @@ import discord
 from discord.ext import commands
 import logging
 
+from commands import is_bot_admin
 from scheduler import (
     add_task, remove_task, list_tasks, get_task,
     format_task, REGISTERED_ACTIONS, WEEKDAY_NAMES, init_db
@@ -55,7 +56,7 @@ class ScheduleCommands(commands.Cog):
         self.bot = bot
         init_db()
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.group(name='schedule', invoke_without_command=True)
     async def schedule_group(self, ctx):
         """Base command — shows usage if no subcommand given."""
@@ -98,7 +99,7 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     # !schedule add
     # ------------------------------------------------------------------
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @schedule_group.command(name='add')
     async def schedule_add(self, ctx, action: str, weekday_str: str, time_str: str, *args):
         """
@@ -215,7 +216,7 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     # !schedule list
     # ------------------------------------------------------------------
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @schedule_group.command(name='list')
     async def schedule_list(self, ctx):
         rows = list_tasks(guild_id=ctx.guild.id)
@@ -247,7 +248,7 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     # !schedule remove
     # ------------------------------------------------------------------
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @schedule_group.command(name='remove')
     async def schedule_remove(self, ctx, task_id: int):
         row = get_task(task_id)
@@ -263,7 +264,7 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     # !schedule info
     # ------------------------------------------------------------------
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @schedule_group.command(name='info')
     async def schedule_info(self, ctx, task_id: int):
         row = get_task(task_id)
@@ -298,7 +299,7 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     # !schedule actions
     # ------------------------------------------------------------------
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @schedule_group.command(name='actions')
     async def schedule_actions(self, ctx):
         embed = discord.Embed(

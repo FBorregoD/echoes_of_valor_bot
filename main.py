@@ -23,6 +23,7 @@ TOURNAMENTS = config['tournaments']
 MAPPING_SHEET_URL = config['mapping_sheet_url']
 DEFAULT_WEEK = config.get('default_week', 4)
 COMMAND_PREFIX = config.get('command_prefix', '!')
+ADMIN_USER_IDS: list[int] = config.get('admin_user_ids', [])
 
 # Token from environment variable (never hardcode or use token.txt in production)
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
@@ -35,6 +36,29 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 bot.remove_command('help')
 
+# Expose admin list on the bot object so cogs can access it
+bot.admin_user_ids = ADMIN_USER_IDS
+
+
+# ------------------------------------------------------------------
+# Custom admin check — used by all admin commands instead of
+# has_permissions(administrator=True).
+# Raises commands.CheckFailure so on_command_error handles it.
+# ------------------------------------------------------------------
+def is_bot_admin():
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.author.id in ctx.bot.admin_user_ids:
+            return True
+        raise commands.CheckFailure(
+            "❌ You don't have permission to use this command. "
+            "Only authorised bot admins can do that."
+        )
+    return commands.check(predicate)
+
+
+# Attach to bot so cogs can import it via bot.is_bot_admin
+bot.is_bot_admin = is_bot_admin
+
 
 @bot.event
 async def on_ready():
@@ -45,33 +69,37 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-    logger.debug(f"Message from {message.author}: {message.content}")
+
+    # ----------------------------------------------------------------
+    # Only react when the bot is explicitly mentioned (@echoes_bot ...).
+    # ----------------------------------------------------------------
+    if bot.user not in message.mentions:
+        return
+
+    logger.debug(f"Mention from {message.author}: {message.content}")
     await bot.process_commands(message)
 
 
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ You don't have permission to use this command.")
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send(str(error) or "❌ You don't have permission to use this command.")
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `!help {ctx.command}` for usage.")
+        await ctx.send(
+            f"❌ Missing argument: `{error.param.name}`. "
+            f"Use `@{ctx.bot.user.name} !help {ctx.command}` for usage."
+        )
     elif isinstance(error, commands.CommandNotFound):
-        pass  # Silently ignore unknown commands
+        pass
     else:
         logger.error(f"Unhandled error in command '{ctx.command}': {error}", exc_info=error)
 
 
 async def main():
     async with bot:
-        # Load tournament commands cog first (scheduler needs a reference to it)
         tournament_cog = await setup_commands(bot, TOURNAMENTS, MAPPING_SHEET_URL, DEFAULT_WEEK)
-
-        # Load schedule management commands
         await setup_schedule(bot)
-
-        # Start the scheduler loop, passing a reference to the tournament cog
         await bot.add_cog(SchedulerCog(bot, tournament_cog))
-
         await bot.start(BOT_TOKEN)
 
 

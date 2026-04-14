@@ -19,6 +19,23 @@ from match_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _is_bot_admin(ctx) -> bool:
+    """Returns True if the invoking user is in the bot's admin_user_ids list."""
+    return ctx.author.id in getattr(ctx.bot, 'admin_user_ids', [])
+
+
+def is_bot_admin():
+    """Command check: only bot admins (from config) may use this command."""
+    async def predicate(ctx):
+        if _is_bot_admin(ctx):
+            return True
+        raise __import__('discord').ext.commands.CheckFailure(
+            "❌ You don't have permission to use this command. "
+            "Only authorised bot admins can do that."
+        )
+    return __import__('discord').ext.commands.check(predicate)
+
+
 class TournamentCommands(commands.Cog):
     def __init__(self, bot, tournaments, mapping_sheet_url, default_week):
         self.bot = bot
@@ -124,7 +141,7 @@ class TournamentCommands(commands.Cog):
     # Commands restricted to admins
     # ------------------------------------------------------------------
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='sendto')
     async def sendto_command(self, ctx, player: str, week: int = None):
         if week is None:
@@ -172,7 +189,7 @@ class TournamentCommands(commands.Cog):
                 f"👉 Please enable DMs from server members or check your privacy settings."
             )
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='notify_all')
     async def notify_all_command(self, ctx, week: int = None):
         if week is None:
@@ -252,7 +269,7 @@ class TournamentCommands(commands.Cog):
             await asyncio.sleep(1)
         await ctx.send(f"✅ DMs sent to {success_count} out of {len(players_with_pending)} players.")
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='post_divisions')
     async def post_divisions(self, ctx, week: int = None, tournament_name_or_alias: str = "MA"):
         if week is None:
@@ -334,7 +351,7 @@ class TournamentCommands(commands.Cog):
             result_msg += f"❌ Errors: {', '.join(error_list)}\n"
         await ctx.send(result_msg)
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='refresh')
     async def refresh_cache(self, ctx):
         await ctx.send("🔄 Refreshing cache... This may take a moment.")
@@ -355,7 +372,7 @@ class TournamentCommands(commands.Cog):
     # Debug commands (admin only)
     # ------------------------------------------------------------------
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='test_map')
     async def test_map(self, ctx):
         mapping = load_player_mapping(self.mapping_sheet_url)
@@ -364,7 +381,7 @@ class TournamentCommands(commands.Cog):
         else:
             await self._send_chunks(ctx, f"📋 Mapping loaded: {mapping}")
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='test_id')
     async def test_id(self, ctx, player: str):
         mapping = load_player_mapping(self.mapping_sheet_url)
@@ -373,7 +390,7 @@ class TournamentCommands(commands.Cog):
         else:
             await ctx.send(f"❌ Player {player} not found in mapping.")
 
-    @commands.has_permissions(administrator=True)
+    @is_bot_admin()
     @commands.command(name='dmtest')
     async def dmtest(self, ctx, user_id: int, *, message: str):
         try:
@@ -389,36 +406,176 @@ class TournamentCommands(commands.Cog):
 
     @commands.command(name='help')
     async def help_command(self, ctx, command_name: str = None):
+        bot_mention = f"@{ctx.bot.user.name}"
         if command_name is None:
+            # ── Overview embed ─────────────────────────────────────────
             embed = discord.Embed(
                 title="📖 Bot Commands",
-                description="Use `!help <command>` for more details.",
+                description=(
+                    f"Mention the bot before every command: `{bot_mention} !matches …`\n"
+                    f"Use `{bot_mention} !help <command>` for details on a specific command."
+                ),
                 color=discord.Color.blue()
             )
-            embed.add_field(name="!matches / !m", value="Show matches for a player in a given week.", inline=False)
-            embed.add_field(name="!division / !d", value="Show all matchups for a division in a given week.", inline=False)
-            embed.add_field(name="!tournaments", value="List all tournaments with their aliases.", inline=False)
-            embed.add_field(name="── Admin only ──", value="​", inline=False)
-            embed.add_field(name="!sendto", value="Send a DM to a player with their matches.", inline=False)
-            embed.add_field(name="!notify_all", value="Send DMs to all players with pending matches.", inline=False)
-            embed.add_field(name="!post_divisions", value="Post division matchups to threads.", inline=False)
-            embed.add_field(name="!refresh", value="Refresh all cached data from Google Sheets.", inline=False)
-            embed.add_field(name="!test_map / !test_id / !dmtest", value="Debug commands.", inline=False)
-            embed.set_footer(text="Example: !matches Scorium 4")
+            # Public
+            embed.add_field(
+                name="🌐 Public",
+                value=(
+                    "`!matches` / `!m` — Show matches for a player in a given week.\n"
+                    "`!division` / `!d` — Show all matchups for a division.\n"
+                    "`!tournaments` — List tournaments and their aliases."
+                ),
+                inline=False
+            )
+            # Admin — tournament
+            embed.add_field(
+                name="🔐 Admin — Tournament",
+                value=(
+                    "`!sendto` — Send a player their matches by DM.\n"
+                    "`!notify_all` — DM all players with pending matches.\n"
+                    "`!post_divisions` — Post matchups to division threads.\n"
+                    "`!refresh` — Reload all cached Google Sheets data."
+                ),
+                inline=False
+            )
+            # Admin — scheduler
+            embed.add_field(
+                name="🗓️ Admin — Scheduler",
+                value=(
+                    "`!schedule add <action> <weekday> <HH:MM> [options]` — Create a recurring task.\n"
+                    "`!schedule list` — List all scheduled tasks for this server.\n"
+                    "`!schedule remove <id>` — Delete a scheduled task.\n"
+                    "`!schedule info <id>` — Show full details of a task.\n"
+                    "`!schedule actions` — List available actions and their parameters.\n\n"
+                    "**Scheduler options:** `tz=UTC` · `week=default` · `tournament=MA` · "
+                    "`channel=<id>` · `thread=<id>`\n"
+                    "**Weekdays:** `monday` / `mon`, `tuesday` / `tue`, … `sunday` / `sun` (or 0–6)\n\n"
+                    "**Examples:**\n"
+                    "```\n"
+                    f"{bot_mention} !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4\n"
+                    f"{bot_mention} !schedule add notify_all friday 18:30 tz=UTC week=default\n"
+                    f"{bot_mention} !schedule remove 3\n"
+                    "```"
+                ),
+                inline=False
+            )
+            # Debug
+            embed.add_field(
+                name="🛠️ Admin — Debug",
+                value="`!test_map` · `!test_id` · `!dmtest`",
+                inline=False
+            )
+            embed.set_footer(text=f"Example: {bot_mention} !matches Scorium 4")
             await ctx.send(embed=embed)
         else:
             cmd = command_name.lower()
+            # Strip leading '!' if the user typed e.g. "!help !matches"
+            cmd = cmd.lstrip('!')
             help_texts = {
-                'matches':       ("!matches / !m",      "Show matches for a player in a given week.",                           "`!matches <player> [week]`",          "`!matches Scorium 4`",               "If week is omitted, uses the default week."),
-                'sendto':        ("!sendto",             "Send a private DM to a player with their matches.",                   "`!sendto <player> [week]`",           "`!sendto Scorium 4`",                "Requires admin. Player must be in mapping sheet."),
-                'notify_all':    ("!notify_all",         "Send DMs to every player who has pending matches.",                   "`!notify_all [week]`",                "`!notify_all 4`",                    "Requires admin. May be rate-limited."),
-                'division':      ("!division / !d",      "Show all matchups for a division.",                                   "`!division <division> [week]`",       "`!division Bronze 4`",               ""),
-                'post_divisions':("!post_divisions",     "Post division matchups to threads named after each division.",        "`!post_divisions [week] [alias]`",    "`!post_divisions 4 MA`",             "Requires admin. Tournament alias defaults to 'MA'."),
-                'tournaments':   ("!tournaments",        "List all available tournaments with their aliases.",                  "`!tournaments`",                      "",                                   ""),
-                'refresh':       ("!refresh",            "Clear and reload all cached data from Google Sheets.",                "`!refresh`",                          "",                                   "Requires admin."),
-                'test_map':      ("!test_map",           "Debug: Show the loaded player mapping.",                              "`!test_map`",                         "",                                   "Requires admin."),
-                'test_id':       ("!test_id",            "Debug: Show Discord ID for a specific player.",                      "`!test_id <player>`",                 "`!test_id Scorium`",                 "Requires admin."),
-                'dmtest':        ("!dmtest",             "Debug: Send a test DM to a Discord user ID.",                        "`!dmtest <user_id> <message>`",       "`!dmtest 254177975417700352 Hello`", "Requires admin."),
+                'matches': (
+                    "!matches / !m",
+                    "Show matches for a player in a given week.",
+                    f"`{bot_mention} !matches <player> [week]`",
+                    f"`{bot_mention} !matches Scorium 4`",
+                    "If week is omitted, uses the default week configured in the bot."
+                ),
+                'm': (
+                    "!matches / !m",
+                    "Alias for `!matches`.",
+                    f"`{bot_mention} !m <player> [week]`",
+                    f"`{bot_mention} !m Scorium 4`",
+                    "If week is omitted, uses the default week."
+                ),
+                'division': (
+                    "!division / !d",
+                    "Show all matchups for a division in a given week.",
+                    f"`{bot_mention} !division <division> [week]`",
+                    f"`{bot_mention} !division Bronze 4`",
+                    ""
+                ),
+                'tournaments': (
+                    "!tournaments",
+                    "List all available tournaments with their aliases.",
+                    f"`{bot_mention} !tournaments`",
+                    "",
+                    ""
+                ),
+                'sendto': (
+                    "!sendto",
+                    "Send a private DM to a player with their match schedule.",
+                    f"`{bot_mention} !sendto <player> [week]`",
+                    f"`{bot_mention} !sendto Scorium 4`",
+                    "Requires admin. Player must be present in the mapping sheet."
+                ),
+                'notify_all': (
+                    "!notify_all",
+                    "Send DMs to every player who has pending matches.",
+                    f"`{bot_mention} !notify_all [week]`",
+                    f"`{bot_mention} !notify_all 4`",
+                    "Requires admin. May be rate-limited for large rosters."
+                ),
+                'post_divisions': (
+                    "!post_divisions",
+                    "Post division matchups to the threads named after each division.",
+                    f"`{bot_mention} !post_divisions [week] [tournament_alias]`",
+                    f"`{bot_mention} !post_divisions 4 MA`",
+                    "Requires admin. Tournament alias defaults to `MA`."
+                ),
+                'refresh': (
+                    "!refresh",
+                    "Clear and reload all cached data from Google Sheets.",
+                    f"`{bot_mention} !refresh`",
+                    "",
+                    "Requires admin."
+                ),
+                'schedule': (
+                    "!schedule",
+                    "Manage recurring scheduled tasks for this server.",
+                    (
+                        f"`{bot_mention} !schedule add <action> <weekday> <HH:MM> [options]`\n"
+                        f"`{bot_mention} !schedule list`\n"
+                        f"`{bot_mention} !schedule remove <id>`\n"
+                        f"`{bot_mention} !schedule info <id>`\n"
+                        f"`{bot_mention} !schedule actions`"
+                    ),
+                    (
+                        f"`{bot_mention} !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA`\n"
+                        f"`{bot_mention} !schedule add notify_all friday 18:30 tz=UTC week=default`\n"
+                        f"`{bot_mention} !schedule remove 3`"
+                    ),
+                    (
+                        "Requires admin.\n"
+                        "**Available options for `add`:**\n"
+                        "• `tz=<IANA timezone>` — e.g. `UTC`, `Europe/Madrid` (default: `UTC`)\n"
+                        "• `week=<number|default>` — which week to use (default: `default`)\n"
+                        "• `tournament=<alias>` — tournament alias e.g. `MA`, `EoV` (for `post_divisions`)\n"
+                        "• `channel=<id>` — target channel ID (defaults to current channel)\n"
+                        "• `thread=<id>` — target thread ID (optional)\n\n"
+                        "**Available actions:** `post_divisions`, `notify_all`\n"
+                        "**Weekday formats:** `monday`/`mon`, `tuesday`/`tue`, … `sunday`/`sun` or `0`–`6`"
+                    )
+                ),
+                'test_map': (
+                    "!test_map",
+                    "Debug: display the loaded player → Discord ID mapping.",
+                    f"`{bot_mention} !test_map`",
+                    "",
+                    "Requires admin."
+                ),
+                'test_id': (
+                    "!test_id",
+                    "Debug: look up the Discord ID for a specific player name.",
+                    f"`{bot_mention} !test_id <player>`",
+                    f"`{bot_mention} !test_id Scorium`",
+                    "Requires admin."
+                ),
+                'dmtest': (
+                    "!dmtest",
+                    "Debug: send a test DM to any Discord user by their ID.",
+                    f"`{bot_mention} !dmtest <user_id> <message>`",
+                    f"`{bot_mention} !dmtest 254177975417700352 Hello there`",
+                    "Requires admin."
+                ),
             }
             if cmd in help_texts:
                 title, desc, usage, example, note = help_texts[cmd]
@@ -432,7 +589,10 @@ class TournamentCommands(commands.Cog):
             else:
                 embed = discord.Embed(
                     title="Unknown Command",
-                    description=f"`{command_name}` is not a valid command. Use `!help` to see all commands.",
+                    description=(
+                        f"`{command_name}` is not a recognised command.\n"
+                        f"Use `{bot_mention} !help` to see all available commands."
+                    ),
                     color=discord.Color.red()
                 )
                 await ctx.send(embed=embed)
