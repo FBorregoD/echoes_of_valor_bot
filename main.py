@@ -69,10 +69,10 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-
-    # ----------------------------------------------------------------
-    # Only react when the bot is explicitly mentioned (@echoes_bot ...).
-    # ----------------------------------------------------------------
+    
+    # DEBUG TEMPORAL - borrar después
+    logger.info(f"MSG RECEIVED from {message.author}: '{message.content}' | mentions: {message.mentions}")
+    
     if bot.user not in message.mentions:
         return
 
