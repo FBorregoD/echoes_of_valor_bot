@@ -530,3 +530,74 @@ async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
     except Exception as e:
         logger.error(f"Error sending DM to {discord_id}: {e}", exc_info=True)
         return False
+    
+# ------------------------------------------------------------
+# Division standings
+# ------------------------------------------------------------
+import pandas as pd # Asegúrate de que pandas está importado arriba
+
+def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[list], list[str]]:
+    """
+    Busca dinámicamente la tabla de clasificación en la hoja de la división.
+    Devuelve los datos de la tabla y los encabezados.
+    """
+    target_sheet = None
+    for sheet_name in sheets_dict.keys():
+        if sheet_name.lower() == division_name.lower():
+            target_sheet = sheet_name
+            break
+
+    if not target_sheet:
+        return None, None
+
+    df = sheets_dict[target_sheet]
+    standings = []
+    
+    header_row_idx = None
+    col_map = {}
+
+    # 1. Escanear dinámicamente para encontrar dónde empieza la tabla
+    for idx, row in df.iterrows():
+        # Convertimos la fila a minúsculas para buscar los encabezados
+        row_strs = [str(cell).strip().lower() if pd.notna(cell) else "" for cell in row]
+        
+        # Buscamos la fila que tenga "rank" y "hero"
+        if "rank" in row_strs and "hero" in row_strs:
+            header_row_idx = idx
+            # Mapeamos en qué índice está cada columna
+            for c_idx, val in enumerate(row_strs):
+                if "rank" in val: col_map['rank'] = c_idx
+                elif "hero" in val: col_map['hero'] = c_idx
+                elif "points" in val or "pts" in val: col_map['points'] = c_idx
+                elif "matches played" in val or "played" in val: col_map['played'] = c_idx
+            break
+
+    if header_row_idx is None:
+        return [], []
+
+    # 2. Extraer los datos de los jugadores debajo del encabezado
+    for idx in range(header_row_idx + 1, len(df)):
+        row = df.iloc[idx]
+        
+        # Función auxiliar para sacar valores seguros
+        def get_val(key):
+            if key in col_map and col_map[key] < len(row):
+                cell = row.iloc[col_map[key]]
+                val_str = str(cell).strip()
+                # Limpiar flotantes de excel (ej. "1.0" -> "1")
+                if val_str.endswith(".0"): val_str = val_str[:-2]
+                return val_str if pd.notna(cell) and val_str != 'nan' else ""
+            return ""
+
+        hero = get_val('hero')
+        if not hero:
+            break # Si la celda del héroe está vacía, se acabó la tabla
+
+        rank = get_val('rank')
+        points = get_val('points')
+        played = get_val('played')
+        
+        standings.append([rank, hero, played, points])
+
+    headers = ["#", "Player", "Played", "Pts"]
+    return standings, headers
