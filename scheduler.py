@@ -66,6 +66,7 @@ def init_db():
                 last_run         TEXT,              -- ISO timestamp of last execution
                 created_by       INTEGER NOT NULL,
                 current_week     INTEGER,           -- auto-incrementing week; NULL = fixed; -1 = exhausted
+                end_week         INTEGER,           -- stop auto-advancing after this week (NULL = run until no matches)
                 interval_minutes INTEGER            -- if set: ignore weekday/hour/minute
             )
         """)
@@ -73,6 +74,7 @@ def init_db():
         existing = {row[1] for row in conn.execute("PRAGMA table_info(scheduled_tasks)")}
         for col, definition in [
             ("current_week",     "INTEGER"),
+            ("end_week",         "INTEGER"),
             ("interval_minutes", "INTEGER"),
         ]:
             if col not in existing:
@@ -84,15 +86,15 @@ def init_db():
 def add_task(*, action: str, params: dict, guild_id: int, channel_id: int,
              thread_id: int | None, weekday: int | None, hour: int, minute: int,
              tz: str, created_by: int, current_week: int | None = None,
-             interval_minutes: int | None = None) -> int:
+             end_week: int | None = None, interval_minutes: int | None = None) -> int:
     with _get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO scheduled_tasks
                (action, params, guild_id, channel_id, thread_id,
-                weekday, hour, minute, tz, created_by, current_week, interval_minutes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                weekday, hour, minute, tz, created_by, current_week, end_week, interval_minutes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (action, json.dumps(params), guild_id, channel_id, thread_id,
-             weekday, hour, minute, tz, created_by, current_week, interval_minutes)
+             weekday, hour, minute, tz, created_by, current_week, end_week, interval_minutes)
         )
         conn.commit()
         return cur.lastrowid
@@ -237,11 +239,16 @@ class SchedulerCog(commands.Cog):
         if auto_week == -1:
             logger.info(f"Task {task_id}: season finished, skipping.")
             return
+        end_week = row["end_week"]
         if auto_week is not None:
+            if end_week is not None and auto_week > end_week:
+                logger.info(f"Task {task_id}: reached end_week {end_week}, stopping.")
+                update_current_week(task_id, -1)
+                return
             params = {**params, "week": str(auto_week)}
 
         try:
-            await self._dispatch(row["action"], destination, params, task_id, auto_week)
+            await self._dispatch(row["action"], destination, params, task_id, auto_week, end_week=row["end_week"])
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}", exc_info=True)
             try:
@@ -250,7 +257,7 @@ class SchedulerCog(commands.Cog):
                 pass
 
     async def _dispatch(self, action: str, destination, params: dict,
-                        task_id: int, auto_week: int | None):
+                        task_id: int, auto_week: int | None, end_week: int | None = None):
         """Route an action to the shared tournament_actions functions."""
         cog = self.cog_ref
 
@@ -282,6 +289,7 @@ class SchedulerCog(commands.Cog):
                     task_id=task_id, current_week=auto_week,
                     sheets_by_tourney=sheets_by_tourney,
                     destination=destination, action_name=action,
+                    end_week=end_week,
                 )
 
         elif action == "notify_all":
@@ -308,6 +316,7 @@ class SchedulerCog(commands.Cog):
                     task_id=task_id, current_week=auto_week,
                     sheets_by_tourney=sheets_by_tourney,
                     destination=destination, action_name=action,
+                    end_week=end_week,
                 )
 
         else:

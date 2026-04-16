@@ -244,6 +244,19 @@ class ScheduleCommands(commands.Cog):
             except ValueError:
                 pass
 
+        # end_week: optional upper bound for auto-advancing
+        end_week = None
+        end_week_raw = opts.get("end_week")
+        if end_week_raw:
+            try:
+                end_week = int(end_week_raw)
+            except ValueError:
+                await ctx.send(f"❌ `end_week` must be a number (e.g. `end_week=8`).")
+                return
+            if current_week is not None and end_week < current_week:
+                await ctx.send(f"❌ `end_week` ({end_week}) must be ≥ `week` ({current_week}).")
+                return
+
         task_id = add_task(
             action=action,
             params=action_params,
@@ -256,15 +269,17 @@ class ScheduleCommands(commands.Cog):
             tz=tz,
             created_by=ctx.author.id,
             current_week=current_week,
+            end_week=end_week,
             interval_minutes=interval_minutes,
         )
 
         thread_note = f" in thread `{thread_id}`" if thread_id else ""
-        auto_note = (
-            f"Starting at **week {current_week}**, advancing automatically each run."
-            if current_week is not None
-            else "Fixed week (no auto-advance)."
-        )
+        if current_week is None:
+            auto_note = "Fixed week (no auto-advance)."
+        elif end_week is not None:
+            auto_note = f"Starting at **week {current_week}**, advancing each run, stopping after **week {end_week}**."
+        else:
+            auto_note = f"Starting at **week {current_week}**, advancing automatically each run until season ends."
         embed = discord.Embed(
             title="✅ Scheduled task created",
             color=discord.Color.green()
@@ -316,12 +331,14 @@ class ScheduleCommands(commands.Cog):
             ) or "—"
             thread_str = f" · thread `{row['thread_id']}`" if row["thread_id"] else ""
             cw = row["current_week"]
+            ew = row["end_week"] if "end_week" in row.keys() else None
             if cw is None:
                 week_mode_str = "fixed"
             elif cw == -1:
                 week_mode_str = "🏁 season complete"
             else:
-                week_mode_str = f"auto (next: week {cw})"
+                limit = f" → max wk {ew}" if ew else ""
+                week_mode_str = f"auto (next: wk {cw}{limit})"
             value = (
                 f"**Action:** `{row['action']}`\n"
                 f"**When:** {_when_display(row)}\n"
@@ -387,12 +404,14 @@ class ScheduleCommands(commands.Cog):
             inline=False
         )
         cw = row["current_week"]
+        ew = row["end_week"] if "end_week" in row.keys() else None
         if cw is None:
-            cw_display = "fixed (no auto-advance)"
+            cw_display = "Fixed week (no auto-advance)"
         elif cw == -1:
             cw_display = "🏁 Season complete — task will no longer run"
         else:
-            cw_display = f"Auto-advancing — next run: **week {cw}**"
+            limit = f", stops after **week {ew}**" if ew else " until season ends"
+            cw_display = f"Auto-advancing — next: **week {cw}**{limit}"
         embed.add_field(name="Week mode", value=cw_display, inline=False)
         embed.add_field(name="Created by", value=f"<@{row['created_by']}>", inline=True)
         embed.add_field(name="Last run", value=row["last_run"] or "never", inline=True)

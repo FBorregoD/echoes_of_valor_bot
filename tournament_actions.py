@@ -17,7 +17,7 @@ from match_utils import (
     load_hero_builds_from_sheets,
     load_player_mapping,
     send_dm_to_player,
-    format_table,
+    format_table_messages,
     split_message,
     normalize_name,
     week_has_matches,
@@ -62,57 +62,47 @@ def resolve_week(week_raw: str | int, default_week: int) -> int:
     return int(week_raw)
 
 
-def build_division_message(tourney_name: str, div_name: str, week: int,
-                            current: list, pending: list, builds: dict) -> str:
-    """Build the formatted message for a single division's matchups."""
-    msg = f"**🏆 {tourney_name} - Division {div_name}**\n📅 **Pairings for week {week}**\n\n"
+def build_division_messages(tourney_name: str, div_name: str, week: int,
+                             current: list, pending: list, builds: dict) -> list[str]:
+    """Return a list of Discord messages for a single division's matchups."""
+    title_line = f"**🏆 {tourney_name} - Division {div_name}** · 📅 Week {week}"
+    messages = []
 
     if current:
-        rows = []
-        for m in current:
-            p1, p2 = m['player1'], m['player2']
-            rows.append([
-                f"{p1} ({builds.get(normalize_name(p1), '?')})",
-                f"{p2} ({builds.get(normalize_name(p2), '?')})",
-            ])
-        msg += f"```\n{format_table(rows, ['Player 1', 'Player 2'], f'Week {week}')}\n```"
+        rows = [
+            [f"{m['player1']} ({builds.get(normalize_name(m['player1']), '?')})",
+             f"{m['player2']} ({builds.get(normalize_name(m['player2']), '?')})",]
+            for m in current
+        ]
+        for i, chunk in enumerate(format_table_messages(rows, ['Player 1', 'Player 2'], f'Pairings — week {week}')):
+            messages.append((title_line + "\n" if i == 0 else "") + chunk)
     else:
-        msg += "📅 No matches for this week.\n"
+        messages.append(f"{title_line}\n📅 No matches for this week.")
 
     if pending:
-        rows = []
-        for m in pending:
-            p1, p2 = m['player1'], m['player2']
-            rows.append([
-                m['week'],
-                f"{p1} ({builds.get(normalize_name(p1), '?')})",
-                f"{p2} ({builds.get(normalize_name(p2), '?')})",
-            ])
-        msg += (
-            f"\n**⏳ Pending matches from previous weeks:**\n"
-            f"```\n{format_table(rows, ['Week', 'Player 1', 'Player 2'], 'Pending')}\n```"
-        )
+        rows = [
+            [m['week'],
+             f"{m['player1']} ({builds.get(normalize_name(m['player1']), '?')})",
+             f"{m['player2']} ({builds.get(normalize_name(m['player2']), '?')})",]
+            for m in pending
+        ]
+        messages.extend(format_table_messages(rows, ['Week', 'Player 1', 'Player 2'], '⏳ Pending'))
 
-    return msg
+    return messages
 
 
-def build_pending_dm(player: str, tourney_name: str, pending: list, builds: dict) -> str:
-    """Build the DM content for a player's pending matches in one tournament."""
+def build_pending_dm(player: str, tourney_name: str, pending: list, builds: dict) -> list[str]:
+    """Return a list of DM chunks for a player's pending matches in one tournament."""
     rows = []
     for m in pending:
-        if player in m['player1']:
-            ph, opp = m['player1'], m['player2']
-        else:
-            ph, opp = m['player2'], m['player1']
+        ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
         rows.append([
             m['week'], m['division'],
             f"{ph} ({builds.get(normalize_name(ph), '?')})",
             f"{opp} ({builds.get(normalize_name(opp), '?')})",
         ])
-    return (
-        f"**{tourney_name}**\n```\n"
-        f"{format_table(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], 'Pending matches')}\n```"
-    )
+    chunks = format_table_messages(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], f'Pending — {tourney_name}')
+    return chunks
 
 
 # ── Core actions ───────────────────────────────────────────────────────────────
@@ -172,9 +162,8 @@ async def run_post_divisions(
             current, pending = get_division_matches(sheets, div_name, week)
             if not current and not pending:
                 continue
-            msg = build_division_message(tourney['name'], div_name, week, current, pending, builds)
-            for chunk in split_message(msg):
-                await thread.send(chunk)
+            for msg in build_division_messages(tourney['name'], div_name, week, current, pending, builds):
+                await thread.send(msg)
             success_count += 1
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -238,18 +227,22 @@ async def run_notify_all(
             try:
                 _, pending = get_player_matches(td['sheets'], player, week)
                 if pending:
-                    details.append(build_pending_dm(player, td['tourney']['name'], pending, td['builds']))
+                    details.extend(build_pending_dm(player, td['tourney']['name'], pending, td['builds']))
             except Exception as e:
                 details.append(f"⚠️ Error in {td['tourney']['name']}: {e}")
 
         if details:
-            msg = f"⏳ **{player}**, you have pending matches from previous weeks:\n\n" + "\n".join(details)
-            for chunk in split_message(msg):
+            # First message: intro line
+            intro = f"⏳ **{player}**, you have pending matches from previous weeks:"
+            all_chunks = [intro] + details
+            failed = False
+            for chunk in all_chunks:
                 ok = await send_dm_to_player(bot, discord_id, chunk)
                 if not ok:
                     await destination.send(f"⚠️ Could not DM **{player}** (DMs disabled).")
+                    failed = True
                     break
-            else:
+            if not failed:
                 success_count += 1
         await asyncio.sleep(1)
 
@@ -263,16 +256,29 @@ async def advance_auto_week(
     sheets_by_tourney: dict,
     destination: discord.abc.Messageable,
     action_name: str,
+    end_week: int | None = None,
 ):
     """
     After a successful scheduled run, advance current_week by 1.
-    If the next week has no matches, mark the task as exhausted (current_week = -1).
-
-    Imports scheduler helpers lazily to avoid circular imports.
+    Stops (marks exhausted) if:
+      - end_week is set and next_week > end_week, OR
+      - no matches exist for the next week in any tournament.
     """
     from scheduler import update_current_week
 
     next_week = current_week + 1
+
+    # Respect explicit end_week ceiling
+    if end_week is not None and next_week > end_week:
+        update_current_week(task_id, -1)
+        await destination.send(
+            f"🏁 **Reached end of schedule** (week {end_week}). "
+            f"Scheduled task `{action_name}` (ID {task_id}) will no longer run. "
+            f"Use `!schedule remove {task_id}` to clean it up."
+        )
+        logger.info(f"Task {task_id}: end_week {end_week} reached — marked as exhausted.")
+        return
+
     has_next = any(
         week_has_matches(sheets, next_week)
         for sheets in sheets_by_tourney.values()
