@@ -255,7 +255,7 @@ class TournamentCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
-    @commands.command(name='standings', aliases=['standings', 'c'])
+    @commands.command(name='standings', aliases=['standing', 'c'])
     async def clasificacion_command(self, ctx, tournament_alias: str, *, division_name: str = None):
         # Si el usuario no escribe la división, asumimos que es el nombre del canal/hilo actual
         div_name = division_name or ctx.channel.name
@@ -385,6 +385,7 @@ class TournamentCommands(commands.Cog):
         else:
             cmd = command_name.lstrip('!').lower()
             help_texts = {
+                'standings':      ("!standings",            "Show current league rankings.",                                  f"`{bot_mention} !standings [tournament]`",               f"`{bot_mention} !standings MA`",                          "If no tournament is specified, it defaults to the first one in config."),
                 'matches':        ("!matches / !m",       "Show matches for a player in a given week.",                    f"`{bot_mention} !matches <player> [week]`",              f"`{bot_mention} !matches Scorium 4`",                        "Omitting week uses the default."),
                 'm':              ("!matches / !m",       "Alias for `!matches`.",                                         f"`{bot_mention} !m <player> [week]`",                   f"`{bot_mention} !m Scorium 4`",                              ""),
                 'division':       ("!division / !d",      "Show all matchups for a division.",                             f"`{bot_mention} !division <division> [week]`",          f"`{bot_mention} !division Bronze 4`",                        ""),
