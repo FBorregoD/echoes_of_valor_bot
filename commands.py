@@ -255,6 +255,74 @@ class TournamentCommands(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
+    @commands.command(name='standings', aliases=['standings', 'c'])
+    async def clasificacion_command(self, ctx, tournament_alias: str, *, division_name: str = None):
+        # Si el usuario no escribe la división, asumimos que es el nombre del canal/hilo actual
+        div_name = division_name or ctx.channel.name
+        
+        tourney = self.find_tournament(tournament_alias)
+        if not tourney:
+            await ctx.send(f"❌ Tournament `{tournament_alias}` not found. Use `!tournaments` to see available tournaments.")
+            return
+
+        msg_loading = await ctx.send(f"🔍 Loading standings from **{div_name}** in **{tourney['name']}**...")
+
+        try:
+            # 1. Cargar los datos desde tu caché o Google Sheets
+            from match_utils import get_division_standings, format_table_messages
+            sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+            
+            standings_data, headers = get_division_standings(sheets, div_name)
+            
+            if standings_data is None:
+                await msg_loading.edit(content=f"❌ División `{div_name}` not found in the google sheet.")
+                return
+            if not standings_data:
+                await msg_loading.edit(content=f"⚠️ Page `{div_name}` found, but I couldn't locate the standings.")
+                return
+
+            # 2. Formatear la tabla para Discord
+            messages = format_table_messages(standings_data, headers, f'🏆 Standings - {div_name} ({tourney["name"]})')
+
+            # 3. ENRUTAMIENTO ESTRICTO: Encontrar el hilo/canal de la división
+            from tournament_actions import get_threads_for_channel
+            target_thread = None
+            
+            # A) Si el comando ya se tiró dentro del hilo correcto
+            if ctx.channel.name.lower() == div_name.lower():
+                target_thread = ctx.channel
+            else:
+                # B) Buscar en los hilos del canal actual
+                search_channel = getattr(ctx.channel, 'parent', ctx.channel)
+                if isinstance(search_channel, discord.TextChannel):
+                    threads = get_threads_for_channel(search_channel)
+                    target_thread = threads.get(div_name.lower())
+                
+                # C) Si no está en el canal actual, buscar a fondo en todo el servidor
+                if not target_thread:
+                    for ch in ctx.guild.text_channels:
+                        threads = get_threads_for_channel(ch)
+                        if div_name.lower() in threads:
+                            target_thread = threads[div_name.lower()]
+                            break
+
+            # 4. Enviar el resultado al destino
+            if target_thread:
+                for msg in messages:
+                    await target_thread.send(msg)
+                
+                # Confirmar si se envió desde fuera
+                if ctx.channel.id != target_thread.id:
+                    await msg_loading.edit(content=f"✅ Standings published at the thread: {target_thread.mention}")
+                else:
+                    await msg_loading.delete()
+            else:
+                await msg_loading.edit(content=f"⚠️ Data extracted, but I couldn't locate the thread `{div_name}` in the server.")
+
+        except Exception as e:
+            logger.error(f"clasificacion_command ({tourney['name']}): {e}", exc_info=True)
+            await msg_loading.edit(content=f"❌ Unexpected error: {e}")
+
     # ── Help ───────────────────────────────────────────────────────────────────
 
     @commands.command(name='help')
