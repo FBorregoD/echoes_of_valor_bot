@@ -24,6 +24,10 @@
         }
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
-    "default_week": 4,
-    "command_prefix": "!"
+    "default_week": 1,
+    "command_prefix": "!",
+    "admin_user_ids": [
+		254177975417700352,
+		455045255675510805
+    ]
 }

@@ -264,46 +264,150 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
     return current, pending
 
 
+# Maximum Discord code-block width before switching to card layout
+_TABLE_MAX_WIDTH = 80
+# Discord message character limit (leaving room for markdown wrappers)
+_MSG_MAX_CHARS = 1900
+# Max rows per code-block chunk (keeps blocks short and readable)
+_TABLE_CHUNK_ROWS = 15
+
+
+def _table_total_width(col_widths: list[int]) -> int:
+    return sum(col_widths) + 3 * len(col_widths) + 1
+
+
+def _ascii_table_lines(rows: list, headers: list) -> list[str]:
+    """Build lines for a fixed-width ASCII table (header + data rows, no footer repeat)."""
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(cell)))
+    sep   = "┌" + "┬".join("─" * (w + 2) for w in col_widths) + "┐"
+    head  = "│ " + " │ ".join(h.center(w) for h, w in zip(headers, col_widths)) + " │"
+    div   = "├" + "┼".join("─" * (w + 2) for w in col_widths) + "┤"
+    foot  = "└" + "┴".join("─" * (w + 2) for w in col_widths) + "┘"
+    lines = [sep, head, div]
+    for row in rows:
+        lines.append("│ " + " │ ".join(str(cell).ljust(w) for cell, w in zip(row, col_widths)) + " │")
+    lines.append(foot)
+    return lines
+
+
+def _card_lines(rows: list, headers: list) -> list[str]:
+    """
+    Render each row as a compact card — two-line format:
+      **Wk N · Division**   (or **Division** if no week col)
+        ⚔️  Your Hero
+        🆚  Opponent
+    Falls back to a simple label: value list for other column layouts.
+    """
+    h_lower = [x.lower() for x in headers]
+    has_week = 'week' in h_lower
+    has_div  = 'division' in h_lower
+    wi = h_lower.index('week')     if has_week else None
+    di = h_lower.index('division') if has_div  else None
+
+    # Columns that hold player/hero info (anything that isn't week/division)
+    player_cols = [(i, headers[i]) for i in range(len(headers)) if i not in (wi, di) and i is not None]
+    icons = ['⚔️ ', '🆚']
+
+    lines = []
+    for row in rows:
+        # Header line
+        parts = []
+        if has_week:
+            parts.append(f"Wk {row[wi]}")
+        if has_div:
+            parts.append(str(row[di]))
+        lines.append(f"**{' · '.join(parts)}**" if parts else "**Match**")
+
+        if len(player_cols) == 2:
+            for (i, _), icon in zip(player_cols, icons):
+                lines.append(f"  {icon} {row[i]}")
+        else:
+            for i, label in player_cols:
+                lines.append(f"  {label}: {row[i]}")
+        lines.append("")   # blank separator between cards
+    return lines
+
+
 def format_table(rows: list, headers: list, title: str) -> str:
+    """
+    Legacy single-string renderer (used by build_matches_message in match_utils).
+    Automatically picks ASCII table or card layout based on width.
+    For multi-message sending prefer format_table_messages().
+    """
     if not rows:
         return f"{title}\nNo data.\n"
     col_widths = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(str(cell)))
-    separator = "┌" + "┬".join("─" * (w + 2) for w in col_widths) + "┐"
-    header_line = "│ " + " │ ".join(h.center(w) for h, w in zip(headers, col_widths)) + " │"
-    divider = "├" + "┼".join("─" * (w + 2) for w in col_widths) + "┤"
-    footer = "└" + "┴".join("─" * (w + 2) for w in col_widths) + "┘"
-    lines = [separator, header_line, divider]
+    if _table_total_width(col_widths) <= _TABLE_MAX_WIDTH:
+        return "\n".join(_ascii_table_lines(rows, headers))
+    return "\n".join(_card_lines(rows, headers))
+
+
+def format_table_messages(rows: list, headers: list, title: str) -> list[str]:
+    """
+    Return a list of Discord-ready strings, each fitting within _MSG_MAX_CHARS.
+    Uses ASCII table for narrow data, card layout for wide data.
+    Splits at row boundaries — never mid-row — and re-emits the header on each chunk.
+    """
+    if not rows:
+        return [f"{title}\n*(no data)*"]
+
+    col_widths = [len(h) for h in headers]
     for row in rows:
-        line = "│ " + " │ ".join(str(cell).ljust(w) for cell, w in zip(row, col_widths)) + " │"
-        lines.append(line)
-    lines.append(footer)
-    return "\n".join(lines)
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(cell)))
+
+    use_cards = _table_total_width(col_widths) > _TABLE_MAX_WIDTH
+
+    messages = []
+    chunk_rows = []
+
+    def flush(chunk, is_first: bool):
+        if not chunk:
+            return
+        header = f"**{title}**\n" if is_first else f"**{title} (cont.)**\n"
+        if use_cards:
+            body = "\n".join(_card_lines(chunk, headers))
+        else:
+            body = "```\n" + "\n".join(_ascii_table_lines(chunk, headers)) + "\n```"
+        messages.append(header + body)
+
+    first = True
+    for row in rows:
+        chunk_rows.append(row)
+        # Check size: render trial and measure
+        trial_lines = _card_lines(chunk_rows, headers) if use_cards else _ascii_table_lines(chunk_rows, headers)
+        trial = "\n".join(trial_lines)
+        if len(trial) + 30 > _MSG_MAX_CHARS or len(chunk_rows) >= _TABLE_CHUNK_ROWS:
+            # Flush all but the last row, then start new chunk with that row
+            flush(chunk_rows[:-1], first)
+            first = False
+            chunk_rows = [row]
+
+    flush(chunk_rows, first)
+    return messages
 
 
-def split_message(text: str, max_length: int = 1990) -> list[str]:
+def split_message(text: str, max_length: int = 1900) -> list[str]:
+    """Split a plain text message at line boundaries, never exceeding max_length."""
     if len(text) <= max_length:
         return [text]
-    chunks = []
-    lines = text.split('\n')
-    current_chunk = []
-    current_length = 0
-    for line in lines:
-        if len(line) > max_length:
-            for i in range(0, len(line), max_length):
-                chunks.append(line[i:i + max_length])
-            continue
-        if current_length + len(line) + 1 > max_length:
-            chunks.append('\n'.join(current_chunk))
-            current_chunk = [line]
-            current_length = len(line) + 1
+    chunks, current, length = [], [], 0
+    for line in text.split('\n'):
+        if length + len(line) + 1 > max_length:
+            if current:
+                chunks.append('\n'.join(current))
+            current, length = [line], len(line) + 1
         else:
-            current_chunk.append(line)
-            current_length += len(line) + 1
-    if current_chunk:
-        chunks.append('\n'.join(current_chunk))
+            current.append(line)
+            length += len(line) + 1
+    if current:
+        chunks.append('\n'.join(current))
     return chunks
 
 
@@ -314,40 +418,28 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
         messages = []
 
         msg_current = f"**🏆 {tournament['name']}**\n"
+        header_line = f"**🏆 {tournament['name']}**\n"
         if current:
             rows = []
             for m in current:
-                if player in m['player1']:
-                    player_hero, opponent = m['player1'], m['player2']
-                else:
-                    player_hero, opponent = m['player2'], m['player1']
-                if builds:
-                    player_disp = f"{player_hero} ({builds.get(normalize_name(player_hero), '?')})"
-                    opponent_disp = f"{opponent} ({builds.get(normalize_name(opponent), '?')})"
-                else:
-                    player_disp, opponent_disp = player_hero, opponent
-                rows.append([m['division'], player_disp, opponent_disp])
-            msg_current += f"```\n{format_table(rows, ['Division', 'Your Hero', 'Opponent'], f'Matches in week {week}')}\n```"
+                ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
+                ph_d  = f"{ph}  ({builds.get(normalize_name(ph),  '?')})" if builds else ph
+                opp_d = f"{opp} ({builds.get(normalize_name(opp), '?')})" if builds else opp
+                rows.append([m['division'], ph_d, opp_d])
+            for i, chunk in enumerate(format_table_messages(rows, ['Division', 'Your Hero', 'Opponent'], f'Matches in week {week}')):
+                messages.append((header_line if i == 0 else "") + chunk)
         else:
-            msg_current += "📅 No matches found for this week.\n"
-        messages.append(msg_current)
+            messages.append(header_line + "📅 No matches found for this week.")
 
         if pending:
-            msg_pending = f"**⏳ Pending matches from previous weeks:**\n"
             rows = []
             for m in pending:
-                if player in m['player1']:
-                    player_hero, opponent = m['player1'], m['player2']
-                else:
-                    player_hero, opponent = m['player2'], m['player1']
-                if builds:
-                    player_disp = f"{player_hero} ({builds.get(normalize_name(player_hero), '?')})"
-                    opponent_disp = f"{opponent} ({builds.get(normalize_name(opponent), '?')})"
-                else:
-                    player_disp, opponent_disp = player_hero, opponent
-                rows.append([m['week'], m['division'], player_disp, opponent_disp])
-            msg_pending += f"```\n{format_table(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], 'Pending')}\n```"
-            messages.append(msg_pending)
+                ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
+                ph_d  = f"{ph}  ({builds.get(normalize_name(ph),  '?')})" if builds else ph
+                opp_d = f"{opp} ({builds.get(normalize_name(opp), '?')})" if builds else opp
+                rows.append([m['week'], m['division'], ph_d, opp_d])
+            for chunk in format_table_messages(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], '⏳ Pending matches'):
+                messages.append(chunk)
 
         return messages, None
     except Exception as e:
@@ -390,6 +482,44 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
     return mapping
 
 
+
+def get_max_week(sheets_dict: dict) -> int | None:
+    """Return the highest week number found across all division sheets."""
+    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
+                'format', 'scoresheet', 'arma heroum']
+    max_week = None
+    for sheet_name, df in sheets_dict.items():
+        if any(kw in sheet_name.lower() for kw in excluded):
+            continue
+        for idx, row in df.iterrows():
+            cell = row.iloc[0]
+            if pd.notna(cell) and str(cell).strip().startswith("Week"):
+                w = parse_week_number(str(cell))
+                if w is not None:
+                    max_week = w if max_week is None else max(max_week, w)
+    return max_week
+
+
+def week_has_matches(sheets_dict: dict, week: int) -> bool:
+    """Return True if at least one match row exists for the given week number."""
+    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
+                'format', 'scoresheet', 'arma heroum']
+    for sheet_name, df in sheets_dict.items():
+        if any(kw in sheet_name.lower() for kw in excluded):
+            continue
+        current_week = None
+        for idx, row in df.iterrows():
+            cell = row.iloc[0]
+            if pd.notna(cell) and str(cell).strip().startswith("Week"):
+                current_week = parse_week_number(str(cell))
+            if current_week != week:
+                continue
+            p1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+            p2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+            if p1 or p2:
+                return True
+    return False
+
 async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
     try:
         user = await bot.fetch_user(discord_id)
@@ -400,3 +530,74 @@ async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
     except Exception as e:
         logger.error(f"Error sending DM to {discord_id}: {e}", exc_info=True)
         return False
+    
+# ------------------------------------------------------------
+# Division standings
+# ------------------------------------------------------------
+import pandas as pd # Asegúrate de que pandas está importado arriba
+
+def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[list], list[str]]:
+    """
+    Busca dinámicamente la tabla de clasificación en la hoja de la división.
+    Devuelve los datos de la tabla y los encabezados.
+    """
+    target_sheet = None
+    for sheet_name in sheets_dict.keys():
+        if sheet_name.lower() == division_name.lower():
+            target_sheet = sheet_name
+            break
+
+    if not target_sheet:
+        return None, None
+
+    df = sheets_dict[target_sheet]
+    standings = []
+    
+    header_row_idx = None
+    col_map = {}
+
+    # 1. Escanear dinámicamente para encontrar dónde empieza la tabla
+    for idx, row in df.iterrows():
+        # Convertimos la fila a minúsculas para buscar los encabezados
+        row_strs = [str(cell).strip().lower() if pd.notna(cell) else "" for cell in row]
+        
+        # Buscamos la fila que tenga "rank" y "hero"
+        if "rank" in row_strs and "hero" in row_strs:
+            header_row_idx = idx
+            # Mapeamos en qué índice está cada columna
+            for c_idx, val in enumerate(row_strs):
+                if "rank" in val: col_map['rank'] = c_idx
+                elif "hero" in val: col_map['hero'] = c_idx
+                elif "points" in val or "pts" in val: col_map['points'] = c_idx
+                elif "matches played" in val or "played" in val: col_map['played'] = c_idx
+            break
+
+    if header_row_idx is None:
+        return [], []
+
+    # 2. Extraer los datos de los jugadores debajo del encabezado
+    for idx in range(header_row_idx + 1, len(df)):
+        row = df.iloc[idx]
+        
+        # Función auxiliar para sacar valores seguros
+        def get_val(key):
+            if key in col_map and col_map[key] < len(row):
+                cell = row.iloc[col_map[key]]
+                val_str = str(cell).strip()
+                # Limpiar flotantes de excel (ej. "1.0" -> "1")
+                if val_str.endswith(".0"): val_str = val_str[:-2]
+                return val_str if pd.notna(cell) and val_str != 'nan' else ""
+            return ""
+
+        hero = get_val('hero')
+        if not hero:
+            break # Si la celda del héroe está vacía, se acabó la tabla
+
+        rank = get_val('rank')
+        points = get_val('points')
+        played = get_val('played')
+        
+        standings.append([rank, hero, played, points])
+
+    headers = ["#", "Player", "Played", "Pts"]
+    return standings, headers
