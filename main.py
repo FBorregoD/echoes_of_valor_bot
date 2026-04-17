@@ -7,6 +7,7 @@ import asyncio
 from commands import setup as setup_commands
 from schedule_commands import setup_schedule
 from scheduler import SchedulerCog
+from channel_context import build_channel_index
 
 # Logging setup
 logging.basicConfig(
@@ -24,6 +25,7 @@ MAPPING_SHEET_URL = config['mapping_sheet_url']
 DEFAULT_WEEK = config.get('default_week', 4)
 COMMAND_PREFIX = config.get('command_prefix', '!')
 ADMIN_USER_IDS: list[int] = config.get('admin_user_ids', [])
+CHANNEL_INDEX = build_channel_index(config.get('guild_channels', []))
 
 # Token from environment variable (never hardcode or use token.txt in production)
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
@@ -33,32 +35,24 @@ if not BOT_TOKEN:
 # Setup bot
 intents = discord.Intents.default()
 intents.message_content = True
-# Por esto:
+
 async def get_prefix(bot, message):
-    # Acepta "!comando" o "@bot !comando" o "@bot comando"
     mention_prefixes = [f"<@{bot.user.id}> ", f"<@!{bot.user.id}> "]
     for mention in mention_prefixes:
         if message.content.startswith(mention):
             remainder = message.content[len(mention):]
-            # Si tras la mención viene "!comando", quitar el "!"
             if remainder.startswith(COMMAND_PREFIX):
                 return mention + COMMAND_PREFIX
-            # Si viene "comando" sin "!", añadir prefijo virtual
             return mention
     return COMMAND_PREFIX
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 bot.remove_command('help')
 
-# Expose admin list on the bot object so cogs can access it
 bot.admin_user_ids = ADMIN_USER_IDS
+bot.channel_index  = CHANNEL_INDEX
 
 
-# ------------------------------------------------------------------
-# Custom admin check — used by all admin commands instead of
-# has_permissions(administrator=True).
-# Raises commands.CheckFailure so on_command_error handles it.
-# ------------------------------------------------------------------
 def is_bot_admin():
     async def predicate(ctx: commands.Context) -> bool:
         if ctx.author.id in ctx.bot.admin_user_ids:
@@ -69,8 +63,6 @@ def is_bot_admin():
         )
     return commands.check(predicate)
 
-
-# Attach to bot so cogs can import it via bot.is_bot_admin
 bot.is_bot_admin = is_bot_admin
 
 
@@ -103,7 +95,9 @@ async def on_command_error(ctx, error):
 
 async def main():
     async with bot:
-        tournament_cog = await setup_commands(bot, TOURNAMENTS, MAPPING_SHEET_URL, DEFAULT_WEEK)
+        tournament_cog = await setup_commands(
+            bot, TOURNAMENTS, MAPPING_SHEET_URL, DEFAULT_WEEK
+        )
         await setup_schedule(bot)
         await bot.add_cog(SchedulerCog(bot, tournament_cog))
         await bot.start(BOT_TOKEN)

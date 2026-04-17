@@ -27,7 +27,51 @@
     "default_week": 1,
     "command_prefix": "!",
     "admin_user_ids": [
-		254177975417700352,
-		455045255675510805
+        254177975417700352,
+        455045255675510805
+    ],
+    "guild_channels": [
+        {
+            "_comment": "Servidor de pruebas",
+            "guild_id": 825822880565821451,
+            "channels": [
+                {
+                    "channel_id": 1492880227876081774,
+                    "channel_name": "eov-general",
+                    "tournament": "EoV"
+                },
+                {
+                    "channel_id": 1494427547243515955,
+                    "channel_name": "ma-general",
+                    "tournament": "MA"
+                },
+                {
+                    "channel_id": 825822881074118688,
+                    "channel_name": "bot-admin",
+                    "tournament": null
+                }
+            ]
+        },
+        {
+            "_comment": "Servidor real",
+            "guild_id": 555555555555555555,
+            "channels": [
+                {
+                    "channel_id": 666666666666666666,
+                    "channel_name": "eov-general",
+                    "tournament": "EoV"
+                },
+                {
+                    "channel_id": 777777777777777777,
+                    "channel_name": "ma-general",
+                    "tournament": "MA"
+                },
+                {
+                    "channel_id": 888888888888888888,
+                    "channel_name": "todos",
+                    "tournament": null
+                }
+            ]
+        }
     ]
 }
