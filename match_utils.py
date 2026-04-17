@@ -62,6 +62,31 @@ def normalize_name(name: str) -> str:
     return ' '.join(name.lower().split())
 
 
+def is_division_sheet(df) -> bool:
+    """
+    Return True only if the sheet is a real division sheet.
+    Criteria:
+      1. Has a 'SCHEDULE' marker in column 0.
+      2. At least one match row (below a 'Week N' header) where both player
+         cells follow the 'PlayerName - HeroName' pattern.
+    This filters out meta-sheets like 'Format Scoresheet', 'Legions', etc.
+    """
+    schedule_found = False
+    week_found = False
+    for idx, row in df.iterrows():
+        cell = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        if cell.upper() == "SCHEDULE":
+            schedule_found = True
+        if schedule_found and cell.startswith("Week"):
+            week_found = True
+        if week_found:
+            p1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+            p2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+            if " - " in p1 and " - " in p2:
+                return True
+    return False
+
+
 # ------------------------------------------------------------
 # Hero builds loading
 # ------------------------------------------------------------
@@ -174,6 +199,8 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
     pending_matches = []
     player_lower = player.lower()
     for sheet_name, df in sheets_dict.items():
+        if not is_division_sheet(df):
+            continue
         start_row = None
         for idx, row in df.iterrows():
             if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().startswith("Week"):
@@ -295,11 +322,9 @@ def _ascii_table_lines(rows: list, headers: list) -> list[str]:
 
 def _card_lines(rows: list, headers: list) -> list[str]:
     """
-    Render each row as a compact card — two-line format:
-      **Wk N · Division**   (or **Division** if no week col)
-        ⚔️  Your Hero
-        🆚  Opponent
-    Falls back to a simple label: value list for other column layouts.
+    Render each row as a single line:
+      [Wk N · Division · ] Player1 vs Player2
+    Falls back to label: value pairs for non-match column layouts.
     """
     h_lower = [x.lower() for x in headers]
     has_week = 'week' in h_lower
@@ -307,27 +332,26 @@ def _card_lines(rows: list, headers: list) -> list[str]:
     wi = h_lower.index('week')     if has_week else None
     di = h_lower.index('division') if has_div  else None
 
-    # Columns that hold player/hero info (anything that isn't week/division)
-    player_cols = [(i, headers[i]) for i in range(len(headers)) if i not in (wi, di) and i is not None]
-    icons = ['⚔️ ', '🆚']
+    # Player/hero columns: everything that isn't week or division
+    skip = {i for i in (wi, di) if i is not None}
+    player_cols = [i for i in range(len(headers)) if i not in skip]
 
     lines = []
     for row in rows:
-        # Header line
-        parts = []
+        prefix_parts = []
         if has_week:
-            parts.append(f"Wk {row[wi]}")
+            prefix_parts.append(f"Wk {row[wi]}")
         if has_div:
-            parts.append(str(row[di]))
-        lines.append(f"**{' · '.join(parts)}**" if parts else "**Match**")
+            prefix_parts.append(str(row[di]))
+        prefix = "**" + " · ".join(prefix_parts) + "** · " if prefix_parts else ""
 
         if len(player_cols) == 2:
-            for (i, _), icon in zip(player_cols, icons):
-                lines.append(f"  {icon} {row[i]}")
+            p1 = row[player_cols[0]]
+            p2 = row[player_cols[1]]
+            lines.append(f"{prefix}{p1} ⚔️ {p2}")
         else:
-            for i, label in player_cols:
-                lines.append(f"  {label}: {row[i]}")
-        lines.append("")   # blank separator between cards
+            body = " | ".join(f"{headers[i]}: {row[i]}" for i in player_cols)
+            lines.append(f"{prefix}{body}")
     return lines
 
 
@@ -485,11 +509,9 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
 
 def get_max_week(sheets_dict: dict) -> int | None:
     """Return the highest week number found across all division sheets."""
-    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
-                'format', 'scoresheet', 'arma heroum']
     max_week = None
     for sheet_name, df in sheets_dict.items():
-        if any(kw in sheet_name.lower() for kw in excluded):
+        if not is_division_sheet(df):
             continue
         for idx, row in df.iterrows():
             cell = row.iloc[0]
@@ -502,10 +524,8 @@ def get_max_week(sheets_dict: dict) -> int | None:
 
 def week_has_matches(sheets_dict: dict, week: int) -> bool:
     """Return True if at least one match row exists for the given week number."""
-    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
-                'format', 'scoresheet', 'arma heroum']
     for sheet_name, df in sheets_dict.items():
-        if any(kw in sheet_name.lower() for kw in excluded):
+        if not is_division_sheet(df):
             continue
         current_week = None
         for idx, row in df.iterrows():
@@ -534,12 +554,14 @@ async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
 # ------------------------------------------------------------
 # Division standings
 # ------------------------------------------------------------
-import pandas as pd # Asegúrate de que pandas está importado arriba
 
 def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[list], list[str]]:
     """
-    Busca dinámicamente la tabla de clasificación en la hoja de la división.
-    Devuelve los datos de la tabla y los encabezados.
+    Reads the standings table from a division sheet.
+    The standings live in the RIGHT half of the sheet.
+    The header row contains 'Rank' (exact match, case-insensitive) somewhere
+    after column 10, followed by Hero, Ancestry, Class, Points, Matches played.
+    Data rows stop when the Hero cell is empty or NaN.
     """
     target_sheet = None
     for sheet_name in sheets_dict.keys():
@@ -551,52 +573,66 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
         return None, None
 
     df = sheets_dict[target_sheet]
-    standings = []
-    
+
+    # ── 1. Find the header row and column positions ─────────────────────────
     header_row_idx = None
     col_map = {}
 
-    # 1. Escanear dinámicamente para encontrar dónde empieza la tabla
     for idx, row in df.iterrows():
-        # Convertimos la fila a minúsculas para buscar los encabezados
-        row_strs = [str(cell).strip().lower() if pd.notna(cell) else "" for cell in row]
-        
-        # Buscamos la fila que tenga "rank" y "hero"
-        if "rank" in row_strs and "hero" in row_strs:
-            header_row_idx = idx
-            # Mapeamos en qué índice está cada columna
-            for c_idx, val in enumerate(row_strs):
-                if "rank" in val: col_map['rank'] = c_idx
-                elif "hero" in val: col_map['hero'] = c_idx
-                elif "points" in val or "pts" in val: col_map['points'] = c_idx
-                elif "matches played" in val or "played" in val: col_map['played'] = c_idx
+        for c_idx, cell in enumerate(row):
+            val = str(cell).strip().lower() if pd.notna(cell) else ""
+            if val == "rank":
+                # Found "Rank" cell — map sibling columns in the same row
+                for c2, cell2 in enumerate(row):
+                    v2 = str(cell2).strip().lower() if pd.notna(cell2) else ""
+                    if v2 == "rank":
+                        col_map['rank'] = c2
+                    elif v2 in ("hero", "hero name", "player & hero name", "player + hero"):
+                        col_map['hero'] = c2
+                    elif "points" in v2 or v2 == "pts":
+                        col_map['points'] = c2
+                    elif "played" in v2 or "matches" in v2:
+                        col_map['played'] = c2
+                    elif v2 in ("ancestry",):
+                        col_map['ancestry'] = c2
+                    elif v2 in ("class", "hero class"):
+                        col_map['class'] = c2
+                if 'rank' in col_map and 'hero' in col_map:
+                    header_row_idx = idx
+                    break
+        if header_row_idx is not None:
             break
 
     if header_row_idx is None:
         return [], []
 
-    # 2. Extraer los datos de los jugadores debajo del encabezado
+    # ── 2. Extract data rows ─────────────────────────────────────────────────
+    def _cell(row, key):
+        if key not in col_map:
+            return ""
+        c = col_map[key]
+        if c >= len(row):
+            return ""
+        cell = row.iloc[c]
+        if not pd.notna(cell):
+            return ""
+        val = str(cell).strip()
+        if val in ('nan', 'NaN', ''):
+            return ""
+        # Strip trailing ".0" from integers stored as floats
+        if val.endswith(".0") and val[:-2].lstrip('-').isdigit():
+            val = val[:-2]
+        return val
+
+    standings = []
     for idx in range(header_row_idx + 1, len(df)):
         row = df.iloc[idx]
-        
-        # Función auxiliar para sacar valores seguros
-        def get_val(key):
-            if key in col_map and col_map[key] < len(row):
-                cell = row.iloc[col_map[key]]
-                val_str = str(cell).strip()
-                # Limpiar flotantes de excel (ej. "1.0" -> "1")
-                if val_str.endswith(".0"): val_str = val_str[:-2]
-                return val_str if pd.notna(cell) and val_str != 'nan' else ""
-            return ""
-
-        hero = get_val('hero')
+        hero = _cell(row, 'hero')
         if not hero:
-            break # Si la celda del héroe está vacía, se acabó la tabla
-
-        rank = get_val('rank')
-        points = get_val('points')
-        played = get_val('played')
-        
+            break  # end of standings table
+        rank    = _cell(row, 'rank')
+        points  = _cell(row, 'points')
+        played  = _cell(row, 'played')
         standings.append([rank, hero, played, points])
 
     headers = ["#", "Player", "Played", "Pts"]

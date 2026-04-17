@@ -21,6 +21,7 @@ from match_utils import (
     split_message,
     normalize_name,
     week_has_matches,
+    is_division_sheet,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,12 @@ def find_tournament(tournaments: list[dict], name_or_alias: str) -> dict | None:
 
 
 def get_division_sheets(sheets: dict) -> list[str]:
-    """Return sheet names that represent actual divisions (filtering meta-sheets)."""
+    """Return sheet names that represent actual divisions.
+    A real division sheet contains a 'SCHEDULE' marker row with Week/match data.
+    """
     return [
-        name for name in sheets.keys()
-        if not any(kw in name.lower() for kw in EXCLUDED_SHEET_KEYWORDS)
+        name for name, df in sheets.items()
+        if is_division_sheet(df)
     ]
 
 
