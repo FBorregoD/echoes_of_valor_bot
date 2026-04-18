@@ -323,7 +323,7 @@ def _ascii_table_lines(rows: list, headers: list) -> list[str]:
 def _card_lines(rows: list, headers: list) -> list[str]:
     """
     Render each row as a single line:
-      [Wk N · Division · ] Player1 vs Player2
+      [**Wk N · Division** · ] Player1 ⚔️ Player2
     Falls back to label: value pairs for non-match column layouts.
     """
     h_lower = [x.lower() for x in headers]
@@ -332,7 +332,6 @@ def _card_lines(rows: list, headers: list) -> list[str]:
     wi = h_lower.index('week')     if has_week else None
     di = h_lower.index('division') if has_div  else None
 
-    # Player/hero columns: everything that isn't week or division
     skip = {i for i in (wi, di) if i is not None}
     player_cols = [i for i in range(len(headers)) if i not in skip]
 
@@ -558,10 +557,15 @@ async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
 def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[list], list[str]]:
     """
     Reads the standings table from a division sheet.
-    The standings live in the RIGHT half of the sheet.
-    The header row contains 'Rank' (exact match, case-insensitive) somewhere
-    after column 10, followed by Hero, Ancestry, Class, Points, Matches played.
-    Data rows stop when the Hero cell is empty or NaN.
+
+    Handles two formats produced by different DataFrame sources:
+      A) ggx / pd.read_csv — Google Sheets CSV omits the blank top row, so the
+         row containing 'Rank', 'Hero', 'Points', 'Matches played' becomes the
+         DataFrame column names.  Data rows start at index 0.
+      B) pd.read_excel / header=None — 'Rank' etc. appear as cell values in a
+         data row (row ~1).  Data rows start after that header row.
+
+    The function detects the format automatically.
     """
     target_sheet = None
     for sheet_name in sheets_dict.keys():
@@ -574,66 +578,69 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
 
     df = sheets_dict[target_sheet]
 
-    # ── 1. Find the header row and column positions ─────────────────────────
-    header_row_idx = None
-    col_map = {}
+    def _clean(val) -> str:
+        if not pd.notna(val):
+            return ""
+        s = str(val).strip()
+        if s.lower() in ('nan', ''):
+            return ""
+        if s.endswith(".0") and s[:-2].lstrip('-').isdigit():
+            s = s[:-2]
+        return s
 
-    for idx, row in df.iterrows():
-        for c_idx, cell in enumerate(row):
-            val = str(cell).strip().lower() if pd.notna(cell) else ""
-            if val == "rank":
-                # Found "Rank" cell — map sibling columns in the same row
-                for c2, cell2 in enumerate(row):
-                    v2 = str(cell2).strip().lower() if pd.notna(cell2) else ""
-                    if v2 == "rank":
-                        col_map['rank'] = c2
-                    elif v2 in ("hero", "hero name", "player & hero name", "player + hero"):
-                        col_map['hero'] = c2
-                    elif "points" in v2 or v2 == "pts":
-                        col_map['points'] = c2
-                    elif "played" in v2 or "matches" in v2:
-                        col_map['played'] = c2
-                    elif v2 in ("ancestry",):
-                        col_map['ancestry'] = c2
-                    elif v2 in ("class", "hero class"):
-                        col_map['class'] = c2
-                if 'rank' in col_map and 'hero' in col_map:
-                    header_row_idx = idx
-                    break
-        if header_row_idx is not None:
-            break
+    def _map_cols(names_iter) -> dict:
+        col_map = {}
+        for c_idx, raw in enumerate(names_iter):
+            v = str(raw).strip().lower() if pd.notna(raw) else ""
+            if v == "rank":
+                col_map['rank'] = c_idx
+            elif v in ("hero", "hero name", "player & hero name", "player + hero"):
+                col_map['hero'] = c_idx
+            elif "points" in v or v == "pts":
+                col_map['points'] = c_idx
+            elif "played" in v or "matches" in v:
+                col_map['played'] = c_idx
+        return col_map
 
-    if header_row_idx is None:
+    # Format A: Rank/Hero are column names (ggx CSV format)
+    col_map = _map_cols(df.columns)
+    data_start = 0
+
+    # Format B: Rank/Hero appear as cell values in a row (xlsx / header=None)
+    if 'rank' not in col_map or 'hero' not in col_map:
+        col_map = {}
+        data_start = None
+        for idx, row in df.iterrows():
+            trial = _map_cols(row)
+            if 'rank' in trial and 'hero' in trial:
+                col_map = trial
+                data_start = idx + 1
+                break
+
+    if not col_map or 'rank' not in col_map or 'hero' not in col_map:
+        logger.debug(
+            f"get_division_standings({division_name!r}): "
+            f"could not locate Rank/Hero header in sheet {target_sheet!r}"
+        )
         return [], []
 
-    # ── 2. Extract data rows ─────────────────────────────────────────────────
-    def _cell(row, key):
-        if key not in col_map:
-            return ""
-        c = col_map[key]
-        if c >= len(row):
-            return ""
-        cell = row.iloc[c]
-        if not pd.notna(cell):
-            return ""
-        val = str(cell).strip()
-        if val in ('nan', 'NaN', ''):
-            return ""
-        # Strip trailing ".0" from integers stored as floats
-        if val.endswith(".0") and val[:-2].lstrip('-').isdigit():
-            val = val[:-2]
-        return val
+    logger.debug(
+        f"get_division_standings({division_name!r}): "
+        f"col_map={col_map}, data_start={data_start}"
+    )
 
     standings = []
-    for idx in range(header_row_idx + 1, len(df)):
-        row = df.iloc[idx]
-        hero = _cell(row, 'hero')
+    rows_iter = (
+        df.iterrows() if data_start == 0
+        else ((i, df.iloc[i]) for i in range(data_start, len(df)))
+    )
+    for _, row in rows_iter:
+        hero = _clean(row.iloc[col_map['hero']])
         if not hero:
-            break  # end of standings table
-        rank    = _cell(row, 'rank')
-        points  = _cell(row, 'points')
-        played  = _cell(row, 'played')
+            break
+        rank   = _clean(row.iloc[col_map['rank']])
+        points = _clean(row.iloc[col_map['points']]) if 'points' in col_map else ""
+        played = _clean(row.iloc[col_map['played']]) if 'played' in col_map else ""
         standings.append([rank, hero, played, points])
 
-    headers = ["#", "Player", "Played", "Pts"]
-    return standings, headers
+    return standings, ["#", "Player", "Played", "Pts"]
