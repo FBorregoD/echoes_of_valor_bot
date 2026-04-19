@@ -435,36 +435,36 @@ def split_message(text: str, max_length: int = 1900) -> list[str]:
 
 
 def build_matches_message(tournament: dict, player: str, week: int, force_refresh: bool = False, builds: dict = None):
+    """
+    Build match info as plain-text lines (used for DMs and inline replies).
+    Always uses single-line format: Division · Player (build) vs Opponent (build)
+    """
     try:
         sheets = get_tournament_sheets(tournament['url'], force_refresh=force_refresh)
         current, pending = get_player_matches(sheets, player, week)
-        messages = []
+        lines = [f"**🏆 {tournament['name']}**"]
 
-        msg_current = f"**🏆 {tournament['name']}**\n"
-        header_line = f"**🏆 {tournament['name']}**\n"
+        def fmt(name):
+            if not builds:
+                return name
+            return f"{name} ({builds.get(normalize_name(name), '?')})"
+
         if current:
-            rows = []
+            lines.append(f"**Week {week} matches:**")
             for m in current:
                 ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
-                ph_d  = f"{ph}  ({builds.get(normalize_name(ph),  '?')})" if builds else ph
-                opp_d = f"{opp} ({builds.get(normalize_name(opp), '?')})" if builds else opp
-                rows.append([m['division'], ph_d, opp_d])
-            for i, chunk in enumerate(format_table_messages(rows, ['Division', 'Your Hero', 'Opponent'], f'Matches in week {week}')):
-                messages.append((header_line if i == 0 else "") + chunk)
+                lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
         else:
-            messages.append(header_line + "📅 No matches found for this week.")
+            lines.append("📅 No matches found for this week.")
 
         if pending:
-            rows = []
+            lines.append("")
+            lines.append("**⏳ Pending matches:**")
             for m in pending:
                 ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
-                ph_d  = f"{ph}  ({builds.get(normalize_name(ph),  '?')})" if builds else ph
-                opp_d = f"{opp} ({builds.get(normalize_name(opp), '?')})" if builds else opp
-                rows.append([m['week'], m['division'], ph_d, opp_d])
-            for chunk in format_table_messages(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], '⏳ Pending matches'):
-                messages.append(chunk)
+                lines.append(f"Wk {m['week']} · **{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
 
-        return messages, None
+        return split_message("\n".join(lines)), None
     except Exception as e:
         logger.error(f"Error building matches message for {tournament['name']}: {e}", exc_info=True)
         return None, f"Error in {tournament['name']}: {e}"

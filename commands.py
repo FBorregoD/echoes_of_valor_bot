@@ -11,10 +11,7 @@ from match_utils import (
     send_dm_to_player,
     build_matches_message,
     split_message,
-    normalize_name,
-    format_table,
     get_division_standings,
-    format_table_messages,
 )
 from tournament_actions import (
     find_tournament,
@@ -23,6 +20,8 @@ from tournament_actions import (
     get_threads_for_channel,
 )
 from channel_context import resolve_context, parse_division_args
+from image_render import render_matchups, render_standings
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +132,6 @@ class TournamentCommands(commands.Cog):
             )
             return
 
-        await ctx.send(f"🔍 Looking for division **{division_name}** in week **{week}**...")
         tourneys = self._tourneys_for_ctx(context)
         found_any = False
 
@@ -147,24 +145,8 @@ class TournamentCommands(commands.Cog):
                 if not current and not pending:
                     continue
                 found_any = True
-                msg = f"**🏆 {tourney['name']} - Division {division_name}**\n"
-                if current:
-                    rows = [[
-                        f"{m['player1']} ({builds.get(normalize_name(m['player1']), '?')})",
-                        f"{m['player2']} ({builds.get(normalize_name(m['player2']), '?')})",
-                    ] for m in current]
-                    msg += f"```\n{format_table(rows, ['Player 1', 'Player 2'], f'Week {week}')}\n```"
-                else:
-                    msg += "📅 No matches for this week.\n"
-                if pending:
-                    rows = [[
-                        m['week'],
-                        f"{m['player1']} ({builds.get(normalize_name(m['player1']), '?')})",
-                        f"{m['player2']} ({builds.get(normalize_name(m['player2']), '?')})",
-                    ] for m in pending]
-                    msg += f"\n**⏳ Pending matches from previous weeks:**\n```\n{format_table(rows, ['Week', 'Player 1', 'Player 2'], 'Pending')}\n```"
-                for chunk in split_message(msg):
-                    await ctx.send(chunk)
+                from tournament_actions import send_division_image
+                await send_division_image(ctx.channel, tourney['name'], division_name, week, current, pending, builds)
             except Exception as e:
                 logger.error(f"division_command ({tourney['name']}): {e}", exc_info=True)
                 await ctx.send(f"❌ Error in {tourney['name']}: {e}")
@@ -230,25 +212,24 @@ class TournamentCommands(commands.Cog):
                 )
                 return
 
-            messages = format_table_messages(
-                standings_data, headers,
-                f'🏆 Standings — {division} ({tourney["name"]})'
+            # Build image
+            img_bytes = render_standings(
+                title=f"{tourney['name']} · {division}",
+                rows=standings_data,
             )
+            img_file = discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
 
             # ── Route to the correct thread ────────────────────────────────
             target = None
 
-            # Already in the right thread?
             if context['division'] and context['division'].lower() == division.lower():
                 target = ctx.channel
             else:
-                # Search threads of the parent channel
                 search_ch = getattr(ctx.channel, 'parent', ctx.channel)
                 if isinstance(search_ch, discord.TextChannel):
                     threads = get_threads_for_channel(search_ch)
                     target = threads.get(division.lower())
 
-                # Fallback: search guild-wide (only within allowed channels)
                 if not target and ctx.guild:
                     ch_index = getattr(self.bot, 'channel_index', {})
                     gid = ctx.guild.id
@@ -266,19 +247,17 @@ class TournamentCommands(commands.Cog):
                             break
 
             if target:
-                for msg in messages:
-                    await target.send(msg)
+                # Re-create file object (File can only be sent once)
+                img_file = discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
+                await target.send(file=img_file)
                 if ctx.channel.id != target.id:
-                    await msg_loading.edit(
-                        content=f"✅ Standings published in {target.mention}"
-                    )
+                    await msg_loading.edit(content=f"✅ Standings published in {target.mention}")
                 else:
                     await msg_loading.delete()
             else:
-                # No thread found — post inline
                 await msg_loading.delete()
-                for msg in messages:
-                    await ctx.send(msg)
+                img_file = discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
+                await ctx.send(file=img_file)
 
         except Exception as e:
             logger.error(f"standings_command ({tourney['name']}): {e}", exc_info=True)

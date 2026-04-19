@@ -3,3 +3,4 @@ pandas
 Googlexcel-noPassword
 requests
 lxml
+Pillow
