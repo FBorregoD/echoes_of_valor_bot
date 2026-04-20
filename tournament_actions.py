@@ -23,15 +23,10 @@ from match_utils import (
     split_message,
     normalize_name,
     week_has_matches,
+    is_division_sheet,
 )
 
 logger = logging.getLogger(__name__)
-
-EXCLUDED_SHEET_KEYWORDS = [
-    'formulierreacties', 'hero builds', 'leagues overview',
-    'format', 'scoresheet', 'arma heroum',
-]
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -45,11 +40,14 @@ def find_tournament(tournaments: list[dict], name_or_alias: str) -> dict | None:
 
 
 def get_division_sheets(sheets: dict) -> list[str]:
-    """Return sheet names that represent actual divisions (filtering meta-sheets)."""
-    return [
-        name for name in sheets.keys()
-        if not any(kw in name.lower() for kw in EXCLUDED_SHEET_KEYWORDS)
-    ]
+    """
+    Return sheet names that are real division sheets.
+    Uses is_division_sheet() from match_utils: a sheet is a division if it
+    contains a SCHEDULE marker followed by match rows in 'Player - Hero' format.
+    This reliably excludes meta-sheets (Legions, Leagues overview, Format, etc.)
+    regardless of their name.
+    """
+    return [name for name, df in sheets.items() if is_division_sheet(df)]
 
 
 def get_threads_for_channel(channel: discord.TextChannel) -> dict[str, discord.Thread]:
