@@ -24,6 +24,7 @@ from match_utils import (
     normalize_name,
     week_has_matches,
     is_division_sheet,
+    player_matches,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def build_pending_dm(player: str, tourney_name: str, pending: list, builds: dict
     """Return a list of DM chunks for a player's pending matches in one tournament."""
     rows = []
     for m in pending:
-        ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
+        ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
         rows.append([
             m['week'], m['division'],
             f"{ph} ({builds.get(normalize_name(ph), '?')})",

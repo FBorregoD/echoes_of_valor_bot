@@ -85,6 +85,40 @@ def is_division_sheet(df) -> bool:
 
 
 # ------------------------------------------------------------
+# Player name matching
+# ------------------------------------------------------------
+
+def _player_name(full: str) -> str:
+    """Extract 'PlayerName' from 'PlayerName - HeroName'."""
+    if ' - ' in full:
+        return full.split(' - ')[0].strip()
+    return full.strip()
+
+
+def player_matches(search: str, full_name: str) -> bool:
+    """
+    True if `search` matches the player-name portion of `full_name`.
+    Rules (in order):
+      1. Exact match on player name (case-insensitive)
+      2. Player name starts with the search term
+      3. Search term appears as a whole word in the player name
+    Never matches mid-word, so 'omsk' does NOT match 'Ohmsk'.
+    """
+    import re as _re
+    name = _player_name(full_name).lower()
+    s = search.lower().strip()
+    if not s:
+        return False
+    if name == s:
+        return True
+    if name.startswith(s):
+        return True
+    if _re.search(r'\b' + _re.escape(s) + r'\b', name):
+        return True
+    return False
+
+
+# ------------------------------------------------------------
 # Hero builds loading
 # ------------------------------------------------------------
 def find_hero_builds_sheet(sheets_dict: dict, preferred_name: str = None):
@@ -194,7 +228,6 @@ def parse_week_number(week_str: str):
 def get_player_matches(sheets_dict: dict, player: str, target_week: int):
     current_matches = []
     pending_matches = []
-    player_lower = player.lower()
     for sheet_name, df in sheets_dict.items():
         if not is_division_sheet(df):
             continue
@@ -227,7 +260,7 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
                 "player2": player2,
                 "division": sheet_name
             }
-            if player_lower in player1.lower() or player_lower in player2.lower():
+            if player_matches(player, player1) or player_matches(player, player2):
                 if current_week == target_week:
                     current_matches.append(match)
                 elif current_week < target_week and check != "OK":
@@ -449,7 +482,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
         if current:
             lines.append(f"**Week {week} matches:**")
             for m in current:
-                ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
+                ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
                 lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
         else:
             lines.append("📅 No matches found for this week.")
@@ -458,7 +491,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
             lines.append("")
             lines.append("**⏳ Pending matches:**")
             for m in pending:
-                ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
+                ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
                 lines.append(f"Wk {m['week']} · **{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
 
         return split_message("\n".join(lines)), None

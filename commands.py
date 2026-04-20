@@ -8,6 +8,7 @@ from match_utils import (
     refresh_tournament_cache,
     get_division_matches,
     get_player_matches,
+    player_matches,
     load_hero_builds_from_sheets,
     load_player_mapping,
     send_dm_to_player,
@@ -116,7 +117,7 @@ class TournamentCommands(commands.Cog):
 
                 def pick(m):
                     """Return (player_hero, opponent) in correct order."""
-                    if player.lower() in m['player1'].lower():
+                    if player_matches(player, m['player1']):
                         return m['player1'], m['player2']
                     return m['player2'], m['player1']
 
