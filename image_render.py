@@ -287,3 +287,123 @@ def render_standings(
     buf = io.BytesIO()
     img.save(buf, format='PNG', optimize=True)
     return buf.getvalue()
+
+
+def render_player_matches(
+    player: str,
+    week: int,
+    tourney_results: list[dict],
+) -> bytes:
+    """
+    Render per-player match results across tournaments as a PNG image.
+
+    tourney_results: list of dicts with keys:
+        {
+          'tourney_name': str,
+          'current': [(division, p1_name, p1_build, p2_name, p2_build), ...],
+          'pending': [(week_num, division, p1_name, p1_build, p2_name, p2_build), ...],
+        }
+    Only include entries where current or pending is non-empty.
+    """
+    _, dd = _dummy_draw()
+
+    # ── Measure columns ───────────────────────────────────────────────────────
+    div_col_w = 0
+    all_p1, all_p2 = [], []
+    for t in tourney_results:
+        for r in t['current']:
+            div_col_w = max(div_col_w, _tw(dd, r[0], _f('bold', BASE - 1)) + 8)
+            all_p1.append(_cell_w(dd, r[1], r[2]))
+            all_p2.append(_cell_w(dd, r[3], r[4]))
+        for r in t['pending']:
+            div_col_w = max(div_col_w, _tw(dd, r[1], _f('bold', BASE - 1)) + 8)
+            all_p1.append(_cell_w(dd, r[2], r[3]))
+            all_p2.append(_cell_w(dd, r[4], r[5]))
+
+    wk_col_w = _tw(dd, "Wk 9 ", _f('bold', BASE - 1)) + 6
+    max_p1   = max(all_p1, default=120)
+    max_p2   = max(all_p2, default=120)
+    vs_w     = max(_tw(dd, "vs", _f('bold', BASE - 1)) + VS_PADX * 2, 26)
+
+    row_w   = div_col_w + max_p1 + COL_GAP + vs_w + COL_GAP + max_p2
+    pend_w  = wk_col_w + row_w
+    width   = max(520, max(row_w, pend_w) + PAD * 2)
+
+    # ── Height: header + per-tournament sections ──────────────────────────────
+    h = HDR_H
+    for t in tourney_results:
+        n_cur  = len(t['current'])
+        n_pend = len(t['pending'])
+        if n_cur or n_pend:
+            h += SEC_H                              # tournament label
+            if n_cur:  h += SEC_H + n_cur  * ROW_H + 2
+            if n_pend: h += SEC_H + n_pend * ROW_H + 2
+    h += 6  # bottom accent
+
+    img  = Image.new('RGB', (width, h), BG)
+    draw = ImageDraw.Draw(img)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    draw.rectangle([0, 0, width, HDR_H], fill=BG_HEAD)
+    draw.rectangle([0, 0, 4, HDR_H], fill=ACCENT)
+    title = f"Matches for {player}"
+    draw.text((PAD + 8, HDR_H // 2 - 10), title, font=_f('bold', BASE + 3), fill=TEXT_WHITE)
+    wl = f"Week {week}"
+    wlw = _tw(draw, wl, _f('bold', BASE))
+    draw.text((width - PAD - wlw, HDR_H // 2 - 9), wl, font=_f('bold', BASE), fill=GOLD)
+
+    y = HDR_H
+
+    def draw_match_row(row_data, is_pending: bool, i: int):
+        nonlocal y
+        draw.rectangle([0, y, width, y + ROW_H], fill=BG_ALT if i % 2 == 0 else BG)
+        x = PAD
+        if is_pending:
+            draw.text((x, y + 6), f"Wk {row_data[0]}", font=_f('bold', BASE - 1), fill=ORANGE)
+            x += wk_col_w
+            div, p1n, p1b, p2n, p2b = row_data[1], row_data[2], row_data[3], row_data[4], row_data[5]
+        else:
+            div, p1n, p1b, p2n, p2b = row_data[0], row_data[1], row_data[2], row_data[3], row_data[4]
+
+        # Division label
+        dw = _tw(draw, div, _f('bold', BASE - 1))
+        draw.text((x + (div_col_w - dw) // 2, y + 6), div, font=_f('bold', BASE - 1), fill=ACCENT)
+        x += div_col_w
+
+        vs_cx = x + max_p1 + COL_GAP + vs_w // 2
+        p2_x  = vs_cx + vs_w // 2 + COL_GAP
+        _draw_name_build(draw, x, y, p1n, p1b)
+        _draw_vs(draw, vs_cx, y, vs_w)
+        _draw_name_build(draw, p2_x, y, p2n, p2b)
+        y += ROW_H
+
+    for t in tourney_results:
+        cur, pend = t['current'], t['pending']
+        if not cur and not pend:
+            continue
+
+        # Tournament section header
+        draw.rectangle([0, y, width, y + SEC_H], fill=BG_HEAD)
+        draw.rectangle([0, y, 4, y + SEC_H], fill=ACCENT)
+        draw.text((PAD + 8, y + 4), f"🏆 {t['tourney_name']}", font=_f('bold', BASE), fill=TEXT_WHITE)
+        y += SEC_H
+
+        if cur:
+            _draw_section_header(draw, width, y, f"Week {week} matches", GOLD)
+            y += SEC_H
+            for i, row in enumerate(cur):
+                draw_match_row(row, False, i)
+            y += 2
+
+        if pend:
+            _draw_section_header(draw, width, y, "Pending matches", ORANGE)
+            y += SEC_H
+            for i, row in enumerate(pend):
+                draw_match_row(row, True, i)
+            y += 2
+
+    draw.rectangle([0, h - 4, width, h], fill=ACCENT)
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    return buf.getvalue()

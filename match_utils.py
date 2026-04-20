@@ -29,9 +29,6 @@ def save_cached_sheets(url: str, data):
     _memory_cache[url] = (data, time.time())
 
 
-def invalidate_cache(url: str):
-    _memory_cache.pop(url, None)
-
 
 def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
     if not force_refresh:
@@ -504,21 +501,6 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
         logger.error(f"Error loading player mapping: {e}", exc_info=True)
     return mapping
 
-
-
-def get_max_week(sheets_dict: dict) -> int | None:
-    """Return the highest week number found across all division sheets."""
-    max_week = None
-    for sheet_name, df in sheets_dict.items():
-        if not is_division_sheet(df):
-            continue
-        for idx, row in df.iterrows():
-            cell = row.iloc[0]
-            if pd.notna(cell) and str(cell).strip().startswith("Week"):
-                w = parse_week_number(str(cell))
-                if w is not None:
-                    max_week = w if max_week is None else max(max_week, w)
-    return max_week
 
 
 def week_has_matches(sheets_dict: dict, week: int) -> bool:

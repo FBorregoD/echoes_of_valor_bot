@@ -1,3 +1,4 @@
+import io
 import discord
 from discord.ext import commands
 import logging
@@ -6,35 +7,34 @@ from match_utils import (
     get_tournament_sheets,
     refresh_tournament_cache,
     get_division_matches,
+    get_player_matches,
     load_hero_builds_from_sheets,
     load_player_mapping,
     send_dm_to_player,
     build_matches_message,
     split_message,
+    normalize_name,
     get_division_standings,
+    format_table_messages,
 )
 from tournament_actions import (
     find_tournament,
     run_post_divisions,
     run_notify_all,
     get_threads_for_channel,
+    send_division_image,
 )
 from channel_context import resolve_context, parse_division_args
-from image_render import render_matchups, render_standings
-import io
+from image_render import render_standings, render_player_matches
 
 logger = logging.getLogger(__name__)
 
 
 # ── Admin check ────────────────────────────────────────────────────────────────
 
-def _is_bot_admin(ctx) -> bool:
-    return ctx.author.id in getattr(ctx.bot, 'admin_user_ids', [])
-
-
 def is_bot_admin():
     async def predicate(ctx):
-        if _is_bot_admin(ctx):
+        if ctx.author.id in getattr(ctx.bot, 'admin_user_ids', []):
             return True
         raise commands.CheckFailure(
             "❌ You don't have permission to use this command. "
@@ -52,10 +52,9 @@ class TournamentCommands(commands.Cog):
         self.mapping_sheet_url = mapping_sheet_url
         self.default_week = default_week
 
-    # ── Context helper ─────────────────────────────────────────────────────────
+    # ── Context helpers ────────────────────────────────────────────────────────
 
     def _ctx(self, ctx) -> dict:
-        """Resolve channel context for a command invocation."""
         return resolve_context(
             ctx_channel=ctx.channel,
             guild=ctx.guild,
@@ -65,10 +64,9 @@ class TournamentCommands(commands.Cog):
         )
 
     def _tourneys_for_ctx(self, context: dict) -> list[dict]:
-        """Return the list of tournaments to operate on given a context."""
         if context['tournament']:
             return [context['tournament']]
-        return self.tournaments  # neutral / DM → all
+        return self.tournaments
 
     # ── Public commands ────────────────────────────────────────────────────────
 
@@ -85,8 +83,7 @@ class TournamentCommands(commands.Cog):
         if not context['allowed']:
             return
         embed = discord.Embed(title="🏆 Available Tournaments", color=discord.Color.gold())
-        tourneys = self._tourneys_for_ctx(context)
-        for t in tourneys:
+        for t in self._tourneys_for_ctx(context):
             embed.add_field(name=t['name'], value=f"Alias: `{t.get('alias', 'No alias')}`", inline=False)
         await ctx.send(embed=embed)
 
@@ -96,24 +93,93 @@ class TournamentCommands(commands.Cog):
         if not context['allowed']:
             return
         week = week or self.default_week
+        is_dm = ctx.guild is None
         tourneys = self._tourneys_for_ctx(context)
-        await ctx.send(f"🔍 Searching for **{player}** in week **{week}**...")
+
+        status = await ctx.send(f"🔍 Searching for **{player}** in week **{week}**...")
+
+        # Collect results across all relevant tournaments
+        tourney_results = []
+        errors = []
         for tourney in tourneys:
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
-                messages, err = build_matches_message(tourney, player, week, force_refresh=False, builds=builds)
-                if err:
-                    await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
-                elif messages:
-                    for msg in messages:
-                        for chunk in split_message(msg):
-                            await ctx.send(chunk)
+                current, pending = get_player_matches(sheets, player, week)
+                if not current and not pending:
+                    continue
+
+                def fmt(name, b=builds):
+                    return (name, b.get(normalize_name(name), '?'))
+
+                def pick(m):
+                    """Return (player_hero, opponent) in correct order."""
+                    if player.lower() in m['player1'].lower():
+                        return m['player1'], m['player2']
+                    return m['player2'], m['player1']
+
+                cur_rows = []
+                for m in current:
+                    ph, opp = pick(m)
+                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp)))
+
+                pend_rows = []
+                for m in pending:
+                    ph, opp = pick(m)
+                    pend_rows.append((m['week'], m['division'], *fmt(ph), *fmt(opp)))
+
+                tourney_results.append({
+                    'tourney_name': tourney['name'],
+                    'current': cur_rows,
+                    'pending': pend_rows,
+                })
             except Exception as e:
                 logger.error(f"matches_command ({tourney['name']}): {e}", exc_info=True)
-                await ctx.send(f"❌ Unexpected error in {tourney['name']}: {e}")
+                errors.append(f"❌ Error in {tourney['name']}: {e}")
+
+        await status.delete()
+
+        for err in errors:
+            await ctx.send(err)
+
+        if not tourney_results:
+            if not errors:
+                await ctx.send(f"📅 No matches found for **{player}** in week **{week}**.")
+            return
+
+        if is_dm:
+            # DM: plain text, built directly from collected results
+            for t in tourney_results:
+                lines = [f"**🏆 {t['tourney_name']}**"]
+                if t['current']:
+                    lines.append(f"**Week {week} matches:**")
+                    for r in t['current']:
+                        lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) vs {r[3]} ({r[4]})")
+                if t['pending']:
+                    lines.append("\n**⏳ Pending matches:**")
+                    for r in t['pending']:
+                        lines.append(f"Wk {r[0]} · **{r[1]}** · {r[2]} ({r[3]}) vs {r[4]} ({r[5]})")
+                for chunk in split_message("\n".join(lines)):
+                    await ctx.send(chunk)
+        else:
+            # Channel/thread: image
+            try:
+                img_bytes = render_player_matches(player, week, tourney_results)
+                filename = f"matches_{player.lower().replace(' ', '_')}_w{week}.png"
+                await ctx.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
+            except Exception as e:
+                logger.error(f"matches_command image render failed: {e}", exc_info=True)
+                # Fallback to plain text
+                for t in tourney_results:
+                    lines = [f"**🏆 {t['tourney_name']}**"]
+                    for r in t['current']:
+                        lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) vs {r[3]} ({r[4]})")
+                    for r in t['pending']:
+                        lines.append(f"Wk {r[0]} · **{r[1]}** · {r[2]} ({r[3]}) vs {r[4]} ({r[5]}) *(pending)*")
+                    for chunk in split_message("\n".join(lines)):
+                        await ctx.send(chunk)
 
     @commands.command(name='division', aliases=['d'])
     async def division_command(self, ctx, *args):
@@ -121,7 +187,6 @@ class TournamentCommands(commands.Cog):
         if not context['allowed']:
             return
 
-        # Parse args: resolve division name and week from args + thread context
         division_name, week = parse_division_args(args, context['division'])
         week = week or self.default_week
 
@@ -134,7 +199,6 @@ class TournamentCommands(commands.Cog):
 
         tourneys = self._tourneys_for_ctx(context)
         found_any = False
-
         for tourney in tourneys:
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
@@ -145,47 +209,43 @@ class TournamentCommands(commands.Cog):
                 if not current and not pending:
                     continue
                 found_any = True
-                from tournament_actions import send_division_image
-                await send_division_image(ctx.channel, tourney['name'], division_name, week, current, pending, builds)
+                await send_division_image(
+                    ctx.channel, tourney['name'], division_name, week, current, pending, builds
+                )
             except Exception as e:
                 logger.error(f"division_command ({tourney['name']}): {e}", exc_info=True)
                 await ctx.send(f"❌ Error in {tourney['name']}: {e}")
 
         if not found_any:
-            await ctx.send(f"⚠️ No matches found for division **{division_name}** in week **{week}**.")
+            await ctx.send(
+                f"⚠️ No matches found for division **{division_name}** in week **{week}**."
+            )
 
-    @commands.command(name='standings', aliases=['standing', 'c'])
+    @commands.command(name='standings', aliases=['c'])
     async def standings_command(self, ctx, *args):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
 
-        # Resolve tournament alias and division from args
-        # Possible invocations:
-        #   !standings              → use ctx tournament + ctx division (thread)
-        #   !standings cadmium      → use ctx tournament + cadmium
-        #   !standings eov          → tournament alias only (in neutral/thread)
-        #   !standings eov cadmium  → explicit both
+        # Resolve tournament and division from args + context
+        # Forms: !standings | !standings cadmium | !standings eov | !standings eov cadmium
         tourney  = context['tournament']
         division = context['division']
 
         if args:
-            # Try first arg as tournament alias
             maybe_tourney = find_tournament(self.tournaments, args[0])
             if maybe_tourney:
                 tourney = maybe_tourney
                 division = args[1] if len(args) > 1 else division
             else:
-                # First arg is a division name
                 division = args[0]
 
         if tourney is None:
             await ctx.send(
                 "❌ No tournament resolved. "
-                "Specify one: `!standings <tournament> [division]` (e.g. `!standings eov cadmium`)"
+                "Specify one: `!standings <tournament> [division]` — e.g. `!standings eov cadmium`"
             )
             return
-
         if division is None:
             await ctx.send(
                 "❌ No division specified. "
@@ -196,10 +256,9 @@ class TournamentCommands(commands.Cog):
         msg_loading = await ctx.send(
             f"🔍 Loading standings for **{division}** in **{tourney['name']}**..."
         )
-
         try:
             sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
-            standings_data, headers = get_division_standings(sheets, division)
+            standings_data, _ = get_division_standings(sheets, division)
 
             if standings_data is None:
                 await msg_loading.edit(
@@ -212,51 +271,45 @@ class TournamentCommands(commands.Cog):
                 )
                 return
 
-            # Build image
             img_bytes = render_standings(
                 title=f"{tourney['name']} · {division}",
                 rows=standings_data,
             )
-            img_file = discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
+            img_file = discord.File(
+                io.BytesIO(img_bytes),
+                filename=f"standings_{division.lower()}.png"
+            )
 
-            # ── Route to the correct thread ────────────────────────────────
+            # Route to correct thread if possible
             target = None
-
             if context['division'] and context['division'].lower() == division.lower():
                 target = ctx.channel
             else:
                 search_ch = getattr(ctx.channel, 'parent', ctx.channel)
                 if isinstance(search_ch, discord.TextChannel):
-                    threads = get_threads_for_channel(search_ch)
-                    target = threads.get(division.lower())
-
+                    target = get_threads_for_channel(search_ch).get(division.lower())
                 if not target and ctx.guild:
                     ch_index = getattr(self.bot, 'channel_index', {})
                     gid = ctx.guild.id
-                    allowed_ids = set()
-                    if gid in ch_index:
-                        for k, v in ch_index[gid].items():
-                            if k != '_by_name' and isinstance(k, int):
-                                allowed_ids.add(k)
+                    allowed_ids = {k for k in ch_index.get(gid, {}) if isinstance(k, int)}
                     for ch in ctx.guild.text_channels:
                         if allowed_ids and ch.id not in allowed_ids:
                             continue
-                        threads = get_threads_for_channel(ch)
-                        if division.lower() in threads:
-                            target = threads[division.lower()]
+                        found = get_threads_for_channel(ch).get(division.lower())
+                        if found:
+                            target = found
                             break
 
             if target:
-                # Re-create file object (File can only be sent once)
-                img_file = discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
-                await target.send(file=img_file)
+                await target.send(
+                    file=discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
+                )
                 if ctx.channel.id != target.id:
                     await msg_loading.edit(content=f"✅ Standings published in {target.mention}")
                 else:
                     await msg_loading.delete()
             else:
                 await msg_loading.delete()
-                img_file = discord.File(io.BytesIO(img_bytes), filename=f"standings_{division.lower()}.png")
                 await ctx.send(file=img_file)
 
         except Exception as e:
@@ -278,15 +331,16 @@ class TournamentCommands(commands.Cog):
             await ctx.send(f"❌ No Discord ID found for player **{player}**.")
             return
         discord_id = mapping[player]
-        tourneys = self._tourneys_for_ctx(context)
         success_count = 0
-        for tourney in tourneys:
+        for tourney in self._tourneys_for_ctx(context):
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
-                messages, err = build_matches_message(tourney, player, week, force_refresh=False, builds=builds)
+                messages, err = build_matches_message(
+                    tourney, player, week, force_refresh=False, builds=builds
+                )
                 if err:
                     await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
                 elif messages:
@@ -305,8 +359,7 @@ class TournamentCommands(commands.Cog):
             await ctx.send(f"✅ DM(s) sent to **{player}** ({success_count} tournament(s)).")
         else:
             try:
-                user = await self.bot.fetch_user(discord_id)
-                mention = user.mention
+                mention = (await self.bot.fetch_user(discord_id)).mention
             except Exception:
                 mention = player
             await ctx.send(
@@ -339,14 +392,15 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
-        # Default alias: from context if bound, else "MA"
         if tournament_alias is None:
             tournament_alias = context['tournament']['alias'] if context['tournament'] else "MA"
         tourney = find_tournament(self.tournaments, tournament_alias)
         if not tourney:
             await ctx.send(f"❌ Tournament `{tournament_alias}` not found.")
             return
-        await ctx.send(f"🚀 Posting **{tourney['name']}** week {week or self.default_week} matchups to threads...")
+        await ctx.send(
+            f"🚀 Posting **{tourney['name']}** week {week or self.default_week} matchups to threads..."
+        )
         success, not_found, errors = await run_post_divisions(
             destination=ctx.channel,
             tournaments=self.tournaments,
@@ -382,7 +436,7 @@ class TournamentCommands(commands.Cog):
             await ctx.send(f"❌ Error refreshing mapping: {e}")
         await ctx.send("🎉 Cache refresh complete!")
 
-    # ── Debug commands ─────────────────────────────────────────────────────────
+    # ── Debug / admin commands ─────────────────────────────────────────────────
 
     @is_bot_admin()
     @commands.command(name='test_map')
@@ -450,27 +504,27 @@ class TournamentCommands(commands.Cog):
             embed = discord.Embed(
                 title="📖 Bot Commands",
                 description=(
-                    f"Mention the bot before every command: `{bot_mention} !matches …`\n"
-                    f"Use `{bot_mention} !help <command>` for details."
+                    f"Use `{bot_mention} !<command>` or just `!<command>` if the bot has prefix access.\n"
+                    f"Use `{bot_mention} !help <command>` for details on any command."
                 ),
                 color=discord.Color.blue()
             )
             embed.add_field(
                 name="🌐 Public",
                 value=(
-                    "`!matches` / `!m` — Show matches for a player in a given week.\n"
-                    "`!division` / `!d` — Show matchups for a division (or current thread).\n"
-                    "`!standings` / `!c` — Show division standings.\n"
-                    "`!tournaments` — List tournaments and their aliases."
+                    "`!matches` / `!m <player> [week]` — Player's matches as image (text in DMs).\n"
+                    "`!division` / `!d [division] [week]` — Division matchups as image.\n"
+                    "`!standings` / `!c [tournament] [division]` — Division standings as image.\n"
+                    "`!tournaments` — List available tournaments and their aliases."
                 ),
                 inline=False
             )
             embed.add_field(
                 name="🔐 Admin — Tournament",
                 value=(
-                    "`!sendto` — Send a player their matches by DM.\n"
-                    "`!notify_all` — DM all players with pending matches.\n"
-                    "`!post_divisions` — Post matchups to division threads.\n"
+                    "`!sendto <player> [week]` — Send a player their matches by DM.\n"
+                    "`!notify_all [week]` — DM all players with pending matches.\n"
+                    "`!post_divisions [week] [tournament]` — Post matchups to all division threads.\n"
                     "`!refresh` — Reload all cached Google Sheets data."
                 ),
                 inline=False
@@ -487,53 +541,138 @@ class TournamentCommands(commands.Cog):
                     "**Options:** `tz=UTC` · `week=4` · `tournament=MA` · `channel=<id>`\n\n"
                     "**Examples:**\n"
                     "```\n"
-                    f"{bot_mention} !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4\n"
-                    f"{bot_mention} !schedule add post_divisions every=2h tournament=MA week=4\n"
-                    f"{bot_mention} !schedule remove 3\n"
+                    f"!schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4\n"
+                    f"!schedule add notify_all every=2h week=4\n"
+                    f"!schedule remove 3\n"
                     "```"
                 ),
                 inline=False
             )
             embed.add_field(
                 name="🛠️ Admin — Debug",
-                value="`!test_map` · `!test_id` · `!dmtest` · `!context_debug`",
+                value=(
+                    "`!context_debug` — Show channel/tournament context for this channel.\n"
+                    "`!test_map` — Show full player → Discord ID mapping.\n"
+                    "`!test_id <player>` — Look up Discord ID for one player.\n"
+                    "`!dmtest <user_id> <message>` — Send a test DM."
+                ),
                 inline=False
             )
-            embed.set_footer(text=f"Example: {bot_mention} !matches Scorium 4")
+            embed.set_footer(text=f"Example: {bot_mention} !m Scorium 4  |  !d 4  (inside a division thread)")
             await ctx.send(embed=embed)
         else:
             cmd = command_name.lstrip('!').lower()
+            # Alias normalisation
+            cmd = {'m': 'matches', 'c': 'standings', 'd': 'division'}.get(cmd, cmd)
             help_texts = {
-                'standings':      ("!standings / !c",     "Show current division standings.",
-                    f"`{bot_mention} !standings [tournament] [division]`",
-                    f"`{bot_mention} !standings eov cadmium`",
-                    "In a division thread, tournament and division are inferred automatically."),
-                'matches':        ("!matches / !m",       "Show matches for a player in a given week.",
-                    f"`{bot_mention} !matches <player> [week]`",
-                    f"`{bot_mention} !matches Scorium 4`",
-                    "Omitting week uses the default."),
-                'division':       ("!division / !d",      "Show all matchups for a division.",
-                    f"`{bot_mention} !division [division] [week]`",
-                    f"`{bot_mention} !d 4`  (inside a division thread)\n`{bot_mention} !d cadmium 2`",
-                    "Inside a division thread, the division name is inferred from the thread."),
-                'tournaments':    ("!tournaments",        "List all tournaments with their aliases.",
-                    f"`{bot_mention} !tournaments`", "", ""),
-                'sendto':         ("!sendto",             "Send a player their matches by DM.",
+                'matches': (
+                    "!matches / !m",
+                    "Show a player's matches for a given week.",
+                    f"`{bot_mention} !m <player> [week]`",
+                    f"`{bot_mention} !m Scorium 4`",
+                    "Posts an image in channels/threads. Sends plain text in DMs. Omitting week uses the server default."
+                ),
+                'division': (
+                    "!division / !d",
+                    "Show all matchups for a division in a given week.",
+                    f"`{bot_mention} !d [division] [week]`",
+                    (
+                        f"`{bot_mention} !d 4`  — week 4 of the current thread's division\n"
+                        f"`{bot_mention} !d cadmium 2`  — week 2 of CADMIUM"
+                    ),
+                    "Inside a division thread the division name is inferred automatically."
+                ),
+                'standings': (
+                    "!standings / !c",
+                    "Show the current standings table for a division.",
+                    f"`{bot_mention} !c [tournament] [division]`",
+                    (
+                        f"`{bot_mention} !c`  — standings for the current thread\n"
+                        f"`{bot_mention} !c eov cadmium`  — explicit tournament + division"
+                    ),
+                    "Tournament and division are inferred from the channel/thread when possible."
+                ),
+                'tournaments': (
+                    "!tournaments",
+                    "List all configured tournaments and their short aliases.",
+                    f"`{bot_mention} !tournaments`",
+                    "", ""
+                ),
+                'sendto': (
+                    "!sendto",
+                    "Send a player their match schedule by DM.",
                     f"`{bot_mention} !sendto <player> [week]`",
                     f"`{bot_mention} !sendto Scorium 4`",
-                    "Requires admin. Player must be in mapping sheet."),
-                'notify_all':     ("!notify_all",         "DM all players with pending matches.",
+                    "Requires admin. Player must be in the mapping sheet."
+                ),
+                'notify_all': (
+                    "!notify_all",
+                    "DM every player who has pending (unplayed) matches.",
                     f"`{bot_mention} !notify_all [week]`",
                     f"`{bot_mention} !notify_all 4`",
-                    "Requires admin."),
-                'post_divisions': ("!post_divisions",     "Post division matchups to threads.",
-                    f"`{bot_mention} !post_divisions [week] [alias]`",
+                    "Requires admin. May be slow for large rosters."
+                ),
+                'post_divisions': (
+                    "!post_divisions",
+                    "Post this week's matchups to every division thread.",
+                    f"`{bot_mention} !post_divisions [week] [tournament]`",
                     f"`{bot_mention} !post_divisions 4 MA`",
-                    "Requires admin. Tournament defaults to the channel's bound tournament."),
-                'refresh':        ("!refresh",            "Reload all cached Google Sheets data.",
-                    f"`{bot_mention} !refresh`", "", "Requires admin."),
-                'context_debug':  ("!context_debug",      "Show resolved channel/tournament context.",
-                    f"`{bot_mention} !context_debug`", "", "Requires admin."),
+                    "Requires admin. Tournament defaults to the channel's bound tournament."
+                ),
+                'refresh': (
+                    "!refresh",
+                    "Clear and reload all cached Google Sheets data.",
+                    f"`{bot_mention} !refresh`",
+                    "", "Requires admin."
+                ),
+                'context_debug': (
+                    "!context_debug",
+                    "Show how the bot resolves the current channel (tournament, thread, neutral…).",
+                    f"`{bot_mention} !context_debug`",
+                    "", "Requires admin."
+                ),
+                'test_map': (
+                    "!test_map",
+                    "Print the full player → Discord ID mapping (for debugging).",
+                    f"`{bot_mention} !test_map`",
+                    "", "Requires admin."
+                ),
+                'test_id': (
+                    "!test_id",
+                    "Look up the Discord ID registered for a specific player name.",
+                    f"`{bot_mention} !test_id <player>`",
+                    f"`{bot_mention} !test_id Scorium`",
+                    "Requires admin."
+                ),
+                'dmtest': (
+                    "!dmtest",
+                    "Send a test DM to any Discord user by numeric ID.",
+                    f"`{bot_mention} !dmtest <user_id> <message>`",
+                    f"`{bot_mention} !dmtest 254177975417700352 Hello there`",
+                    "Requires admin."
+                ),
+                'schedule': (
+                    "!schedule",
+                    "Manage recurring scheduled tasks (post_divisions, notify_all).",
+                    (
+                        f"`{bot_mention} !schedule add <action> <when> [options]`\n"
+                        f"`{bot_mention} !schedule list`\n"
+                        f"`{bot_mention} !schedule remove <id>`\n"
+                        f"`{bot_mention} !schedule info <id>`\n"
+                        f"`{bot_mention} !schedule actions`"
+                    ),
+                    (
+                        f"`{bot_mention} !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4`\n"
+                        f"`{bot_mention} !schedule add notify_all every=2h week=4`\n"
+                        f"`{bot_mention} !schedule remove 3`"
+                    ),
+                    (
+                        "Requires admin.\n"
+                        "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
+                        "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
+                        "**Actions:** `post_divisions`, `notify_all`"
+                    )
+                ),
             }
             if cmd in help_texts:
                 title, desc, usage, example, note = help_texts[cmd]
@@ -547,7 +686,10 @@ class TournamentCommands(commands.Cog):
             else:
                 await ctx.send(embed=discord.Embed(
                     title="Unknown Command",
-                    description=f"`{command_name}` is not recognised. Use `{bot_mention} !help` to see all commands.",
+                    description=(
+                        f"`{command_name}` is not recognised. "
+                        f"Use `{bot_mention} !help` to see all commands."
+                    ),
                     color=discord.Color.red()
                 ))
 
