@@ -543,6 +543,7 @@ class TournamentCommands(commands.Cog):
                     "**Examples:**\n"
                     "```\n"
                     f"!schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4\n"
+                    f"!schedule add standings monday 09:00 tz=Europe/Madrid tournament=MA\n"
                     f"!schedule add notify_all every=2h week=4\n"
                     f"!schedule remove 3\n"
                     "```"
@@ -654,7 +655,7 @@ class TournamentCommands(commands.Cog):
                 ),
                 'schedule': (
                     "!schedule",
-                    "Manage recurring scheduled tasks (post_divisions, notify_all).",
+                    "Manage recurring scheduled tasks (post_divisions, notify_all, standings).",
                     (
                         f"`{bot_mention} !schedule add <action> <when> [options]`\n"
                         f"`{bot_mention} !schedule list`\n"
@@ -671,7 +672,8 @@ class TournamentCommands(commands.Cog):
                         "Requires admin.\n"
                         "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
                         "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
-                        "**Actions:** `post_divisions`, `notify_all`"
+                        "**Actions:** `post_divisions`, `notify_all`, `standings`\n"
+                        "`standings` does not use `week` — it always posts current standings."
                     )
                 ),
             }

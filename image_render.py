@@ -214,15 +214,24 @@ def render_matchups(
 
 def render_standings(
     title: str,
-    rows: list[tuple],          # (rank, player_name, played, pts)
+    rows: list[tuple],
+    # rows: (rank, player_name, played, pts) or (rank, player_name, played, pts, build)
     relegation_start: int | None = None,
     min_width: int = 380,
 ) -> bytes:
     """Render standings table. Returns PNG bytes."""
     _, dd = _dummy_draw()
 
+    has_build = len(rows[0]) >= 5
+
     rank_w = max(_tw(dd, str(r[0]), _f('bold', BASE)) for r in rows) + 8
-    name_w = max(_tw(dd, r[1],      _f('bold', BASE)) for r in rows) + 12
+    # Name col: bold player name + dimmer build string side by side
+    def name_total_w(r):
+        nw = _tw(dd, r[1], _f('bold', BASE))
+        if has_build and r[4]:
+            nw += 6 + _tw(dd, f"({r[4]})", _f('regular', BASE - 1))
+        return nw
+    name_w = max(name_total_w(r) for r in rows) + 12
     play_w = max(
         _tw(dd, "Played", _f('bold', BASE - 1)),
         max(_tw(dd, str(r[2]), _f('regular', BASE)) for r in rows)
@@ -234,19 +243,17 @@ def render_standings(
 
     content_w = rank_w + name_w + play_w + pts_w
     width = max(min_width, content_w + PAD * 2)
-    name_w += width - (content_w + PAD * 2)  # stretch name col to fill width
+    name_w += width - (content_w + PAD * 2)
 
     h = HDR_H + SEC_H + len(rows) * ROW_H + 10
 
     img  = Image.new('RGB', (width, h), BG)
     draw = ImageDraw.Draw(img)
 
-    # Header
     draw.rectangle([0, 0, width, HDR_H], fill=BG_HEAD)
     draw.rectangle([0, 0, 4, HDR_H], fill=ACCENT)
     draw.text((PAD + 8, HDR_H // 2 - 10), title, font=_f('bold', BASE + 3), fill=TEXT_WHITE)
 
-    # Column headers
     y = HDR_H
     _draw_section_header(draw, width, y, "", ACCENT)
     draw.text((PAD, y + 4), "#", font=_f('bold', BASE - 1), fill=ACCENT)
@@ -256,7 +263,10 @@ def render_standings(
     y += SEC_H
 
     rel_drawn = False
-    for i, (rank, name, played, pts) in enumerate(rows):
+    for i, row in enumerate(rows):
+        rank, name, played, pts = row[0], row[1], row[2], row[3]
+        build = row[4] if has_build and len(row) > 4 else ""
+
         if relegation_start and not rel_drawn:
             try:
                 if int(rank) >= relegation_start:
@@ -270,12 +280,19 @@ def render_standings(
         # Rank
         rw = _tw(draw, str(rank), _f('bold', BASE))
         draw.text((PAD + (rank_w - rw) // 2, y + 5), str(rank), font=_f('bold', BASE), fill=TEXT_BUILD)
-        # Name
-        draw.text((PAD + rank_w, y + 5), name, font=_f('bold', BASE), fill=TEXT)
+
+        # Player name (bold) + build (dim, smaller) — same style as pairings
+        nx = PAD + rank_w
+        draw.text((nx, y + 5), name, font=_f('bold', BASE), fill=TEXT)
+        if build:
+            nw = _tw(draw, name, _f('bold', BASE))
+            draw.text((nx + nw + 6, y + 6), f"({build})", font=_f('regular', BASE - 1), fill=TEXT_BUILD)
+
         # Played
         pw = _tw(draw, str(played), _f('regular', BASE))
         draw.text((width - PAD - pts_w - play_w + (play_w - pw) // 2, y + 5),
                   str(played), font=_f('regular', BASE), fill=TEXT_BUILD)
+
         # Pts (gold)
         ptw = _tw(draw, str(pts), _f('bold', BASE))
         draw.text((width - PAD - pts_w + (pts_w - ptw) // 2, y + 5),
@@ -385,7 +402,7 @@ def render_player_matches(
         # Tournament section header
         draw.rectangle([0, y, width, y + SEC_H], fill=BG_HEAD)
         draw.rectangle([0, y, 4, y + SEC_H], fill=ACCENT)
-        draw.text((PAD + 8, y + 4), f"🏆 {t['tourney_name']}", font=_f('bold', BASE), fill=TEXT_WHITE)
+        draw.text((PAD + 8, y + 4), t['tourney_name'], font=_f('bold', BASE), fill=TEXT_WHITE)
         y += SEC_H
 
         if cur:

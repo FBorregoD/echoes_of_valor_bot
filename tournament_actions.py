@@ -267,6 +267,72 @@ async def run_notify_all(
     return success_count, len(players_with_pending)
 
 
+async def run_post_standings(
+    *,
+    destination: discord.abc.Messageable,
+    tournaments: list[dict],
+    tournament_alias: str = "MA",
+    force_refresh: bool = False,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Post standings images to each division's thread.
+
+    Returns (success_count, not_found_list, error_list).
+    """
+    from match_utils import get_division_standings
+    from image_render import render_standings
+
+    tourney = find_tournament(tournaments, tournament_alias)
+    if not tourney:
+        await destination.send(f"❌ Tournament `{tournament_alias}` not found.")
+        return 0, [], []
+
+    sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+    division_names = get_division_sheets(sheets)
+    if not division_names:
+        await destination.send("⚠️ No division sheets found.")
+        return 0, [], []
+
+    # Resolve thread dict from destination's parent channel or guild-wide
+    if isinstance(destination, discord.TextChannel):
+        target_channel = destination
+    else:
+        target_channel = getattr(destination, 'parent', None)
+
+    if target_channel and isinstance(target_channel, discord.TextChannel):
+        thread_dict = get_threads_for_channel(target_channel)
+    else:
+        thread_dict = {}
+        for ch in destination.guild.text_channels:
+            thread_dict.update(get_threads_for_channel(ch))
+
+    success_count, not_found, error_list = 0, [], []
+    for div_name in division_names:
+        thread = thread_dict.get(div_name.strip().lower())
+        if not thread:
+            not_found.append(div_name)
+            continue
+        try:
+            rows, _ = get_division_standings(sheets, div_name)
+            if not rows:
+                not_found.append(div_name)
+                continue
+            img_bytes = render_standings(
+                title=f"{tourney['name']} · {div_name}",
+                rows=rows,
+            )
+            await thread.send(
+                file=discord.File(io.BytesIO(img_bytes), filename=f"standings_{div_name.lower()}.png")
+            )
+            success_count += 1
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"run_post_standings: error for '{div_name}': {e}", exc_info=True)
+            error_list.append(f"{div_name}: {e}")
+
+    return success_count, not_found, error_list
+
+
 async def advance_auto_week(
     *,
     task_id: int,
