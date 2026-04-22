@@ -615,6 +615,10 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
                 col_map['points'] = c_idx
             elif "played" in v or "matches" in v:
                 col_map['played'] = c_idx
+            elif v == "ancestry":
+                col_map['ancestry'] = c_idx
+            elif v in ("class", "hero class"):
+                col_map['class'] = c_idx
         return col_map
 
     # Format A: Rank/Hero are column names (ggx CSV format)
@@ -650,7 +654,7 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
         else ((i, df.iloc[i]) for i in range(data_start, len(df)))
     )
     for _, row in rows_iter:
-        hero = _clean(row.iloc[col_map['hero']])
+        hero   = _clean(row.iloc[col_map['hero']])
         if not hero:
             break
         rank   = _clean(row.iloc[col_map['rank']])

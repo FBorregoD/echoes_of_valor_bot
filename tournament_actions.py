@@ -289,6 +289,9 @@ async def run_post_standings(
 
     sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
     division_names = get_division_sheets(sheets)
+    builds = load_hero_builds_from_sheets(
+        sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+    )
     if not division_names:
         await destination.send("⚠️ No division sheets found.")
         return 0, [], []
@@ -317,9 +320,14 @@ async def run_post_standings(
             if not rows:
                 not_found.append(div_name)
                 continue
+            # Enrich with build from builds sheet (same source as !m and !d)
+            rows_with_build = [
+                row + [builds.get(normalize_name(row[1]), '')]
+                for row in rows
+            ]
             img_bytes = render_standings(
                 title=f"{tourney['name']} · {div_name}",
-                rows=rows,
+                rows=rows_with_build,
             )
             await thread.send(
                 file=discord.File(io.BytesIO(img_bytes), filename=f"standings_{div_name.lower()}.png")
