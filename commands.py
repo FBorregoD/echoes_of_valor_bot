@@ -493,6 +493,40 @@ class TournamentCommands(commands.Cog):
             lines.append(f"**guild:** {ctx.guild.name} (id: {ctx.guild.id})")
         await ctx.send("\n".join(lines))
 
+    @is_bot_admin()
+    @commands.command(name='debug_standings')
+    async def debug_standings(self, ctx, tournament_alias: str, division: str):
+        """Debug: show raw get_division_standings output to diagnose build column issues."""
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        tourney = find_tournament(self.tournaments, tournament_alias)
+        if not tourney:
+            await ctx.send(f"❌ Tournament `{tournament_alias}` not found.")
+            return
+        try:
+            sheets = get_tournament_sheets(tourney['url'], force_refresh=True)
+            df = list(sheets.values())[0]  # just to show format info
+            # Find the target sheet
+            target = next((k for k in sheets if k.lower() == division.lower()), None)
+            if not target:
+                await ctx.send(f"❌ Sheet `{division}` not found. Available: {list(sheets.keys())}")
+                return
+            df = sheets[target]
+            rows, headers = get_division_standings(sheets, division)
+            lines = [
+                f"**Sheet:** `{target}`",
+                f"**DataFrame shape:** {df.shape}",
+                f"**Columns (first 5):** {list(df.columns[:5])}",
+                f"**Headers returned:** {headers}",
+                f"**Row count:** {len(rows)}",
+                f"**Row[0]:** {rows[0] if rows else 'EMPTY'}",
+                f"**has_build:** {len(rows[0]) >= 5 if rows else False}",
+            ]
+            await ctx.send("\n".join(lines))
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
+
     # ── Help ───────────────────────────────────────────────────────────────────
 
     @commands.command(name='help')
