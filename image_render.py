@@ -219,54 +219,62 @@ def render_standings(
     relegation_start: int | None = None,
     min_width: int = 380,
 ) -> bytes:
-    """Render standings table. Returns PNG bytes."""
+    """
+    Render standings table. Returns PNG bytes.
+    When build (ancestry+class) is present, each row is two lines tall:
+      bold name on top, smaller dimmed build below — matching the pairings style.
+    """
     _, dd = _dummy_draw()
 
-    has_build = len(rows[0]) >= 5
+    has_build = len(rows[0]) >= 5 and any(r[4] for r in rows if len(r) >= 5)
+    row_h = 34 if has_build else ROW_H   # taller rows to fit two lines
 
     rank_w = max(_tw(dd, str(r[0]), _f('bold', BASE)) for r in rows) + 8
-    # Name col: bold player name + dimmer build string side by side
-    def name_total_w(r):
-        nw = _tw(dd, r[1], _f('bold', BASE))
-        if has_build and r[4]:
-            nw += 6 + _tw(dd, f"({r[4]})", _f('regular', BASE - 1))
-        return nw
-    name_w = max(name_total_w(r) for r in rows) + 12
+    name_w = max(_tw(dd, r[1],      _f('bold', BASE)) for r in rows) + 12
+    if has_build:
+        build_max_w = max(_tw(dd, r[4], _f('regular', BASE - 2)) for r in rows if len(r) >= 5 and r[4])
+        name_w = max(name_w, build_max_w + 12)
     play_w = max(
         _tw(dd, "Played", _f('bold', BASE - 1)),
         max(_tw(dd, str(r[2]), _f('regular', BASE)) for r in rows)
     ) + 12
-    pts_w  = max(
+    pts_w = max(
         _tw(dd, "Pts", _f('bold', BASE - 1)),
         max(_tw(dd, str(r[3]), _f('bold', BASE)) for r in rows)
     ) + 12
 
     content_w = rank_w + name_w + play_w + pts_w
     width = max(min_width, content_w + PAD * 2)
-    name_w += width - (content_w + PAD * 2)
+    name_w += width - (content_w + PAD * 2)   # stretch to fill
 
-    h = HDR_H + SEC_H + len(rows) * ROW_H + 10
+    h = HDR_H + SEC_H + len(rows) * row_h + 10
 
     img  = Image.new('RGB', (width, h), BG)
     draw = ImageDraw.Draw(img)
 
+    # Title header
     draw.rectangle([0, 0, width, HDR_H], fill=BG_HEAD)
     draw.rectangle([0, 0, 4, HDR_H], fill=ACCENT)
     draw.text((PAD + 8, HDR_H // 2 - 10), title, font=_f('bold', BASE + 3), fill=TEXT_WHITE)
 
+    # Column header bar
     y = HDR_H
     _draw_section_header(draw, width, y, "", ACCENT)
-    draw.text((PAD, y + 4), "#", font=_f('bold', BASE - 1), fill=ACCENT)
-    draw.text((PAD + rank_w, y + 4), "Player", font=_f('bold', BASE - 1), fill=ACCENT)
+    draw.text((PAD,                          y + 4), "#",      font=_f('bold', BASE - 1), fill=ACCENT)
+    draw.text((PAD + rank_w,                 y + 4), "Player", font=_f('bold', BASE - 1), fill=ACCENT)
     draw.text((width - PAD - pts_w - play_w, y + 4), "Played", font=_f('bold', BASE - 1), fill=ACCENT)
-    draw.text((width - PAD - pts_w, y + 4), "Pts", font=_f('bold', BASE - 1), fill=ACCENT)
+    draw.text((width - PAD - pts_w,          y + 4), "Pts",    font=_f('bold', BASE - 1), fill=ACCENT)
     y += SEC_H
 
     rel_drawn = False
-    for i, row in enumerate(rows):
-        rank, name, played, pts = row[0], row[1], row[2], row[3]
-        build = row[4] if has_build and len(row) > 4 else ""
+    for i, row_data in enumerate(rows):
+        rank   = row_data[0]
+        name   = row_data[1]
+        played = row_data[2]
+        pts    = row_data[3]
+        build  = row_data[4] if has_build and len(row_data) >= 5 else ""
 
+        # Relegation divider
         if relegation_start and not rel_drawn:
             try:
                 if int(rank) >= relegation_start:
@@ -275,29 +283,32 @@ def render_standings(
             except ValueError:
                 pass
 
-        draw.rectangle([0, y, width, y + ROW_H], fill=BG_ALT if i % 2 == 0 else BG)
+        draw.rectangle([0, y, width, y + row_h], fill=BG_ALT if i % 2 == 0 else BG)
 
-        # Rank
+        # Rank — vertically centred
         rw = _tw(draw, str(rank), _f('bold', BASE))
-        draw.text((PAD + (rank_w - rw) // 2, y + 5), str(rank), font=_f('bold', BASE), fill=TEXT_BUILD)
+        ry = y + (row_h - BASE) // 2 - 1
+        draw.text((PAD + (rank_w - rw) // 2, ry), str(rank), font=_f('bold', BASE), fill=TEXT_BUILD)
 
-        # Player name (bold) + build (dim, smaller) — same style as pairings
         nx = PAD + rank_w
-        draw.text((nx, y + 5), name, font=_f('bold', BASE), fill=TEXT)
-        if build:
-            nw = _tw(draw, name, _f('bold', BASE))
-            draw.text((nx + nw + 6, y + 6), f"({build})", font=_f('regular', BASE - 1), fill=TEXT_BUILD)
+        if has_build and build:
+            # Two-line: name on top, build smaller below
+            draw.text((nx, y + 4),                name,  font=_f('bold',    BASE),     fill=TEXT)
+            draw.text((nx, y + 4 + BASE + 2),     build, font=_f('regular', BASE - 2), fill=TEXT_BUILD)
+        else:
+            draw.text((nx, ry), name, font=_f('bold', BASE), fill=TEXT)
 
-        # Played
+        # Played — centred
         pw = _tw(draw, str(played), _f('regular', BASE))
-        draw.text((width - PAD - pts_w - play_w + (play_w - pw) // 2, y + 5),
+        draw.text((width - PAD - pts_w - play_w + (play_w - pw) // 2, ry),
                   str(played), font=_f('regular', BASE), fill=TEXT_BUILD)
 
-        # Pts (gold)
+        # Pts — gold, centred
         ptw = _tw(draw, str(pts), _f('bold', BASE))
-        draw.text((width - PAD - pts_w + (pts_w - ptw) // 2, y + 5),
+        draw.text((width - PAD - pts_w + (pts_w - ptw) // 2, ry),
                   str(pts), font=_f('bold', BASE), fill=GOLD)
-        y += ROW_H
+
+        y += row_h
 
     draw.rectangle([0, h - 4, width, h], fill=ACCENT)
 
