@@ -58,17 +58,17 @@
             "channels": [
                 {
                     "channel_id": 1496428213789003826,
-                    "channel_name": "eov-general",
+                    "channel_name": "eov",
                     "tournament": "EoV"
                 },
                 {
                     "channel_id": 1496428241031008356,
-                    "channel_name": "ma-general",
+                    "channel_name": "ma",
                     "tournament": "MA"
                 },
                 {
                     "channel_id": 1496427950843887668,
-                    "channel_name": "bot-admin",
+                    "channel_name": "general",
                     "tournament": null
                 }
             ]
