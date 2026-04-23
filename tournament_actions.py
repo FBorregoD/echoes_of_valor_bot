@@ -10,6 +10,9 @@ import logging
 
 import discord
 
+import io
+import discord
+from image_render import render_matchups
 from match_utils import (
     get_tournament_sheets,
     get_division_matches,
@@ -17,19 +20,14 @@ from match_utils import (
     load_hero_builds_from_sheets,
     load_player_mapping,
     send_dm_to_player,
-    format_table_messages,
     split_message,
     normalize_name,
     week_has_matches,
+    is_division_sheet,
+    player_matches,
 )
 
 logger = logging.getLogger(__name__)
-
-EXCLUDED_SHEET_KEYWORDS = [
-    'formulierreacties', 'hero builds', 'leagues overview',
-    'format', 'scoresheet', 'arma heroum',
-]
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -43,11 +41,14 @@ def find_tournament(tournaments: list[dict], name_or_alias: str) -> dict | None:
 
 
 def get_division_sheets(sheets: dict) -> list[str]:
-    """Return sheet names that represent actual divisions (filtering meta-sheets)."""
-    return [
-        name for name in sheets.keys()
-        if not any(kw in name.lower() for kw in EXCLUDED_SHEET_KEYWORDS)
-    ]
+    """
+    Return sheet names that are real division sheets.
+    Uses is_division_sheet() from match_utils: a sheet is a division if it
+    contains a SCHEDULE marker followed by match rows in 'Player - Hero' format.
+    This reliably excludes meta-sheets (Legions, Leagues overview, Format, etc.)
+    regardless of their name.
+    """
+    return [name for name, df in sheets.items() if is_division_sheet(df)]
 
 
 def get_threads_for_channel(channel: discord.TextChannel) -> dict[str, discord.Thread]:
@@ -62,40 +63,58 @@ def resolve_week(week_raw: str | int, default_week: int) -> int:
     return int(week_raw)
 
 
-def build_division_messages(tourney_name: str, div_name: str, week: int,
-                             current: list, pending: list, builds: dict) -> list[str]:
-    """Return a list of Discord messages for a single division's matchups."""
-    title_line = f"**🏆 {tourney_name} - Division {div_name}** · 📅 Week {week}"
-    messages = []
+def build_division_image(tourney_name: str, div_name: str, week: int,
+                          current: list, pending: list, builds: dict) -> bytes | None:
+    """
+    Render the division matchups as a PNG image (bytes).
+    Returns None if there are no matches at all.
+    """
+    def get_build(name): return builds.get(normalize_name(name), "?")
 
-    if current:
-        rows = [
-            [f"{m['player1']} ({builds.get(normalize_name(m['player1']), '?')})",
-             f"{m['player2']} ({builds.get(normalize_name(m['player2']), '?')})",]
-            for m in current
-        ]
-        for i, chunk in enumerate(format_table_messages(rows, ['Player 1', 'Player 2'], f'Pairings — week {week}')):
-            messages.append((title_line + "\n" if i == 0 else "") + chunk)
-    else:
-        messages.append(f"{title_line}\n📅 No matches for this week.")
+    cur_rows = [
+        (m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
+        for m in current
+    ]
+    pend_rows = [
+        (m["week"], m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
+        for m in pending
+    ]
+    if not cur_rows and not pend_rows:
+        return None
+    return render_matchups(
+        title=f"{tourney_name} · {div_name}",
+        week_label=f"Week {week}",
+        current_rows=cur_rows,
+        pending_rows=pend_rows,
+    )
 
-    if pending:
-        rows = [
-            [m['week'],
-             f"{m['player1']} ({builds.get(normalize_name(m['player1']), '?')})",
-             f"{m['player2']} ({builds.get(normalize_name(m['player2']), '?')})",]
-            for m in pending
-        ]
-        messages.extend(format_table_messages(rows, ['Week', 'Player 1', 'Player 2'], '⏳ Pending'))
 
-    return messages
+async def send_division_image(destination, tourney_name: str, div_name: str, week: int,
+                               current: list, pending: list, builds: dict):
+    """Send the matchup image to a Discord channel/thread. Falls back to text on error."""
+    try:
+        img_bytes = build_division_image(tourney_name, div_name, week, current, pending, builds)
+        if img_bytes is None:
+            return
+        filename = f"{div_name.lower()}_week{week}.png"
+        await destination.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Image render failed for {div_name}: {e}", exc_info=True)
+        # Fallback: plain text
+        lines = [f"**🏆 {tourney_name} · {div_name}** — Week {week}"]
+        for m in current:
+            lines.append(f"{m['player1']} vs {m['player2']}")
+        for m in pending:
+            lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']} (pending)")
+        await destination.send("\n".join(lines))
 
 
 def build_pending_dm(player: str, tourney_name: str, pending: list, builds: dict) -> list[str]:
     """Return a list of DM chunks for a player's pending matches in one tournament."""
     rows = []
     for m in pending:
-        ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
+        ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
         rows.append([
             m['week'], m['division'],
             f"{ph} ({builds.get(normalize_name(ph), '?')})",
@@ -162,8 +181,7 @@ async def run_post_divisions(
             current, pending = get_division_matches(sheets, div_name, week)
             if not current and not pending:
                 continue
-            for msg in build_division_messages(tourney['name'], div_name, week, current, pending, builds):
-                await thread.send(msg)
+            await send_division_image(thread, tourney['name'], div_name, week, current, pending, builds)
             success_count += 1
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -247,6 +265,80 @@ async def run_notify_all(
         await asyncio.sleep(1)
 
     return success_count, len(players_with_pending)
+
+
+async def run_post_standings(
+    *,
+    destination: discord.abc.Messageable,
+    tournaments: list[dict],
+    tournament_alias: str = "MA",
+    force_refresh: bool = False,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Post standings images to each division's thread.
+
+    Returns (success_count, not_found_list, error_list).
+    """
+    from match_utils import get_division_standings
+    from image_render import render_standings
+
+    tourney = find_tournament(tournaments, tournament_alias)
+    if not tourney:
+        await destination.send(f"❌ Tournament `{tournament_alias}` not found.")
+        return 0, [], []
+
+    sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+    division_names = get_division_sheets(sheets)
+    builds = load_hero_builds_from_sheets(
+        sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+    )
+    if not division_names:
+        await destination.send("⚠️ No division sheets found.")
+        return 0, [], []
+
+    # Resolve thread dict from destination's parent channel or guild-wide
+    if isinstance(destination, discord.TextChannel):
+        target_channel = destination
+    else:
+        target_channel = getattr(destination, 'parent', None)
+
+    if target_channel and isinstance(target_channel, discord.TextChannel):
+        thread_dict = get_threads_for_channel(target_channel)
+    else:
+        thread_dict = {}
+        for ch in destination.guild.text_channels:
+            thread_dict.update(get_threads_for_channel(ch))
+
+    success_count, not_found, error_list = 0, [], []
+    for div_name in division_names:
+        thread = thread_dict.get(div_name.strip().lower())
+        if not thread:
+            not_found.append(div_name)
+            continue
+        try:
+            rows, _ = get_division_standings(sheets, div_name)
+            if not rows:
+                not_found.append(div_name)
+                continue
+            # Enrich with build from builds sheet (same source as !m and !d)
+            rows_with_build = [
+                row + [builds.get(normalize_name(row[1]), '')]
+                for row in rows
+            ]
+            img_bytes = render_standings(
+                title=f"{tourney['name']} · {div_name}",
+                rows=rows_with_build,
+            )
+            await thread.send(
+                file=discord.File(io.BytesIO(img_bytes), filename=f"standings_{div_name.lower()}.png")
+            )
+            success_count += 1
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"run_post_standings: error for '{div_name}': {e}", exc_info=True)
+            error_list.append(f"{div_name}: {e}")
+
+    return success_count, not_found, error_list
 
 
 async def advance_auto_week(

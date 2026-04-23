@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
 from discord.ext import commands, tasks
 
-from tournament_actions import run_post_divisions, run_notify_all, advance_auto_week
+from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,10 @@ REGISTERED_ACTIONS = {
     "notify_all": {
         "description": "Send DMs to all players with pending matches",
         "params": ["week"],
+    },
+    "standings": {
+        "description": "Post current standings to each division thread",
+        "params": ["tournament"],
     },
 }
 
@@ -318,6 +322,20 @@ class SchedulerCog(commands.Cog):
                     destination=destination, action_name=action,
                     end_week=end_week,
                 )
+
+        elif action == "standings":
+            success, not_found, errors = await run_post_standings(
+                destination=destination,
+                tournaments=cog.tournaments,
+                tournament_alias=params.get("tournament", "MA"),
+                force_refresh=True,
+            )
+            result = f"✅ Standings posted to {success} divisions."
+            if not_found:
+                result += f"\n⚠️ Threads not found: {', '.join(not_found)}"
+            if errors:
+                result += f"\n❌ Errors: {', '.join(errors)}"
+            await destination.send(result)
 
         else:
             logger.warning(f"Task {task_id}: unknown action '{action}'.")

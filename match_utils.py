@@ -29,9 +29,6 @@ def save_cached_sheets(url: str, data):
     _memory_cache[url] = (data, time.time())
 
 
-def invalidate_cache(url: str):
-    _memory_cache.pop(url, None)
-
 
 def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
     if not force_refresh:
@@ -60,6 +57,65 @@ def normalize_name(name: str) -> str:
     name = re.sub(r'[–—−]', '-', name)
     name = re.sub(r'\s*-\s*', '-', name)
     return ' '.join(name.lower().split())
+
+
+def is_division_sheet(df) -> bool:
+    """
+    Return True only if the sheet is a real division sheet.
+    Criteria:
+      1. Has a 'SCHEDULE' marker in column 0.
+      2. At least one match row (below a 'Week N' header) where both player
+         cells follow the 'PlayerName - HeroName' pattern.
+    This filters out meta-sheets like 'Format Scoresheet', 'Legions', etc.
+    """
+    schedule_found = False
+    week_found = False
+    for idx, row in df.iterrows():
+        cell = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        if cell.upper() == "SCHEDULE":
+            schedule_found = True
+        if schedule_found and cell.startswith("Week"):
+            week_found = True
+        if week_found:
+            p1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+            p2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+            if " - " in p1 and " - " in p2:
+                return True
+    return False
+
+
+# ------------------------------------------------------------
+# Player name matching
+# ------------------------------------------------------------
+
+def _player_name(full: str) -> str:
+    """Extract 'PlayerName' from 'PlayerName - HeroName'."""
+    if ' - ' in full:
+        return full.split(' - ')[0].strip()
+    return full.strip()
+
+
+def player_matches(search: str, full_name: str) -> bool:
+    """
+    True if `search` matches the player-name portion of `full_name`.
+    Rules (in order):
+      1. Exact match on player name (case-insensitive)
+      2. Player name starts with the search term
+      3. Search term appears as a whole word in the player name
+    Never matches mid-word, so 'omsk' does NOT match 'Ohmsk'.
+    """
+    import re as _re
+    name = _player_name(full_name).lower()
+    s = search.lower().strip()
+    if not s:
+        return False
+    if name == s:
+        return True
+    if name.startswith(s):
+        return True
+    if _re.search(r'\b' + _re.escape(s) + r'\b', name):
+        return True
+    return False
 
 
 # ------------------------------------------------------------
@@ -172,8 +228,9 @@ def parse_week_number(week_str: str):
 def get_player_matches(sheets_dict: dict, player: str, target_week: int):
     current_matches = []
     pending_matches = []
-    player_lower = player.lower()
     for sheet_name, df in sheets_dict.items():
+        if not is_division_sheet(df):
+            continue
         start_row = None
         for idx, row in df.iterrows():
             if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().startswith("Week"):
@@ -203,7 +260,7 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
                 "player2": player2,
                 "division": sheet_name
             }
-            if player_lower in player1.lower() or player_lower in player2.lower():
+            if player_matches(player, player1) or player_matches(player, player2):
                 if current_week == target_week:
                     current_matches.append(match)
                 elif current_week < target_week and check != "OK":
@@ -295,11 +352,9 @@ def _ascii_table_lines(rows: list, headers: list) -> list[str]:
 
 def _card_lines(rows: list, headers: list) -> list[str]:
     """
-    Render each row as a compact card — two-line format:
-      **Wk N · Division**   (or **Division** if no week col)
-        ⚔️  Your Hero
-        🆚  Opponent
-    Falls back to a simple label: value list for other column layouts.
+    Render each row as a single line:
+      [**Wk N · Division** · ] Player1 ⚔️ Player2
+    Falls back to label: value pairs for non-match column layouts.
     """
     h_lower = [x.lower() for x in headers]
     has_week = 'week' in h_lower
@@ -307,27 +362,25 @@ def _card_lines(rows: list, headers: list) -> list[str]:
     wi = h_lower.index('week')     if has_week else None
     di = h_lower.index('division') if has_div  else None
 
-    # Columns that hold player/hero info (anything that isn't week/division)
-    player_cols = [(i, headers[i]) for i in range(len(headers)) if i not in (wi, di) and i is not None]
-    icons = ['⚔️ ', '🆚']
+    skip = {i for i in (wi, di) if i is not None}
+    player_cols = [i for i in range(len(headers)) if i not in skip]
 
     lines = []
     for row in rows:
-        # Header line
-        parts = []
+        prefix_parts = []
         if has_week:
-            parts.append(f"Wk {row[wi]}")
+            prefix_parts.append(f"Wk {row[wi]}")
         if has_div:
-            parts.append(str(row[di]))
-        lines.append(f"**{' · '.join(parts)}**" if parts else "**Match**")
+            prefix_parts.append(str(row[di]))
+        prefix = "**" + " · ".join(prefix_parts) + "** · " if prefix_parts else ""
 
         if len(player_cols) == 2:
-            for (i, _), icon in zip(player_cols, icons):
-                lines.append(f"  {icon} {row[i]}")
+            p1 = row[player_cols[0]]
+            p2 = row[player_cols[1]]
+            lines.append(f"{prefix}{p1} ⚔️ {p2}")
         else:
-            for i, label in player_cols:
-                lines.append(f"  {label}: {row[i]}")
-        lines.append("")   # blank separator between cards
+            body = " | ".join(f"{headers[i]}: {row[i]}" for i in player_cols)
+            lines.append(f"{prefix}{body}")
     return lines
 
 
@@ -412,36 +465,36 @@ def split_message(text: str, max_length: int = 1900) -> list[str]:
 
 
 def build_matches_message(tournament: dict, player: str, week: int, force_refresh: bool = False, builds: dict = None):
+    """
+    Build match info as plain-text lines (used for DMs and inline replies).
+    Always uses single-line format: Division · Player (build) vs Opponent (build)
+    """
     try:
         sheets = get_tournament_sheets(tournament['url'], force_refresh=force_refresh)
         current, pending = get_player_matches(sheets, player, week)
-        messages = []
+        lines = [f"**🏆 {tournament['name']}**"]
 
-        msg_current = f"**🏆 {tournament['name']}**\n"
-        header_line = f"**🏆 {tournament['name']}**\n"
+        def fmt(name):
+            if not builds:
+                return name
+            return f"{name} ({builds.get(normalize_name(name), '?')})"
+
         if current:
-            rows = []
+            lines.append(f"**Week {week} matches:**")
             for m in current:
-                ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
-                ph_d  = f"{ph}  ({builds.get(normalize_name(ph),  '?')})" if builds else ph
-                opp_d = f"{opp} ({builds.get(normalize_name(opp), '?')})" if builds else opp
-                rows.append([m['division'], ph_d, opp_d])
-            for i, chunk in enumerate(format_table_messages(rows, ['Division', 'Your Hero', 'Opponent'], f'Matches in week {week}')):
-                messages.append((header_line if i == 0 else "") + chunk)
+                ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
+                lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
         else:
-            messages.append(header_line + "📅 No matches found for this week.")
+            lines.append("📅 No matches found for this week.")
 
         if pending:
-            rows = []
+            lines.append("")
+            lines.append("**⏳ Pending matches:**")
             for m in pending:
-                ph, opp = (m['player1'], m['player2']) if player in m['player1'] else (m['player2'], m['player1'])
-                ph_d  = f"{ph}  ({builds.get(normalize_name(ph),  '?')})" if builds else ph
-                opp_d = f"{opp} ({builds.get(normalize_name(opp), '?')})" if builds else opp
-                rows.append([m['week'], m['division'], ph_d, opp_d])
-            for chunk in format_table_messages(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], '⏳ Pending matches'):
-                messages.append(chunk)
+                ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
+                lines.append(f"Wk {m['week']} · **{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
 
-        return messages, None
+        return split_message("\n".join(lines)), None
     except Exception as e:
         logger.error(f"Error building matches message for {tournament['name']}: {e}", exc_info=True)
         return None, f"Error in {tournament['name']}: {e}"
@@ -483,29 +536,10 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
 
 
 
-def get_max_week(sheets_dict: dict) -> int | None:
-    """Return the highest week number found across all division sheets."""
-    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
-                'format', 'scoresheet', 'arma heroum']
-    max_week = None
-    for sheet_name, df in sheets_dict.items():
-        if any(kw in sheet_name.lower() for kw in excluded):
-            continue
-        for idx, row in df.iterrows():
-            cell = row.iloc[0]
-            if pd.notna(cell) and str(cell).strip().startswith("Week"):
-                w = parse_week_number(str(cell))
-                if w is not None:
-                    max_week = w if max_week is None else max(max_week, w)
-    return max_week
-
-
 def week_has_matches(sheets_dict: dict, week: int) -> bool:
     """Return True if at least one match row exists for the given week number."""
-    excluded = ['formulierreacties', 'hero builds', 'leagues overview',
-                'format', 'scoresheet', 'arma heroum']
     for sheet_name, df in sheets_dict.items():
-        if any(kw in sheet_name.lower() for kw in excluded):
+        if not is_division_sheet(df):
             continue
         current_week = None
         for idx, row in df.iterrows():
@@ -534,12 +568,19 @@ async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
 # ------------------------------------------------------------
 # Division standings
 # ------------------------------------------------------------
-import pandas as pd # Asegúrate de que pandas está importado arriba
 
 def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[list], list[str]]:
     """
-    Busca dinámicamente la tabla de clasificación en la hoja de la división.
-    Devuelve los datos de la tabla y los encabezados.
+    Reads the standings table from a division sheet.
+
+    Handles two formats produced by different DataFrame sources:
+      A) ggx / pd.read_csv — Google Sheets CSV omits the blank top row, so the
+         row containing 'Rank', 'Hero', 'Points', 'Matches played' becomes the
+         DataFrame column names.  Data rows start at index 0.
+      B) pd.read_excel / header=None — 'Rank' etc. appear as cell values in a
+         data row (row ~1).  Data rows start after that header row.
+
+    The function detects the format automatically.
     """
     target_sheet = None
     for sheet_name in sheets_dict.keys():
@@ -551,53 +592,74 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
         return None, None
 
     df = sheets_dict[target_sheet]
-    standings = []
-    
-    header_row_idx = None
-    col_map = {}
 
-    # 1. Escanear dinámicamente para encontrar dónde empieza la tabla
-    for idx, row in df.iterrows():
-        # Convertimos la fila a minúsculas para buscar los encabezados
-        row_strs = [str(cell).strip().lower() if pd.notna(cell) else "" for cell in row]
-        
-        # Buscamos la fila que tenga "rank" y "hero"
-        if "rank" in row_strs and "hero" in row_strs:
-            header_row_idx = idx
-            # Mapeamos en qué índice está cada columna
-            for c_idx, val in enumerate(row_strs):
-                if "rank" in val: col_map['rank'] = c_idx
-                elif "hero" in val: col_map['hero'] = c_idx
-                elif "points" in val or "pts" in val: col_map['points'] = c_idx
-                elif "matches played" in val or "played" in val: col_map['played'] = c_idx
-            break
+    def _clean(val) -> str:
+        if not pd.notna(val):
+            return ""
+        s = str(val).strip()
+        if s.lower() in ('nan', ''):
+            return ""
+        if s.endswith(".0") and s[:-2].lstrip('-').isdigit():
+            s = s[:-2]
+        return s
 
-    if header_row_idx is None:
+    def _map_cols(names_iter) -> dict:
+        col_map = {}
+        for c_idx, raw in enumerate(names_iter):
+            v = str(raw).strip().lower() if pd.notna(raw) else ""
+            if v == "rank":
+                col_map['rank'] = c_idx
+            elif v in ("hero", "hero name", "player & hero name", "player + hero"):
+                col_map['hero'] = c_idx
+            elif "points" in v or v == "pts":
+                col_map['points'] = c_idx
+            elif "played" in v or "matches" in v:
+                col_map['played'] = c_idx
+            elif v == "ancestry":
+                col_map['ancestry'] = c_idx
+            elif v in ("class", "hero class"):
+                col_map['class'] = c_idx
+        return col_map
+
+    # Format A: Rank/Hero are column names (ggx CSV format)
+    col_map = _map_cols(df.columns)
+    data_start = 0
+
+    # Format B: Rank/Hero appear as cell values in a row (xlsx / header=None)
+    if 'rank' not in col_map or 'hero' not in col_map:
+        col_map = {}
+        data_start = None
+        for idx, row in df.iterrows():
+            trial = _map_cols(row)
+            if 'rank' in trial and 'hero' in trial:
+                col_map = trial
+                data_start = idx + 1
+                break
+
+    if not col_map or 'rank' not in col_map or 'hero' not in col_map:
+        logger.debug(
+            f"get_division_standings({division_name!r}): "
+            f"could not locate Rank/Hero header in sheet {target_sheet!r}"
+        )
         return [], []
 
-    # 2. Extraer los datos de los jugadores debajo del encabezado
-    for idx in range(header_row_idx + 1, len(df)):
-        row = df.iloc[idx]
-        
-        # Función auxiliar para sacar valores seguros
-        def get_val(key):
-            if key in col_map and col_map[key] < len(row):
-                cell = row.iloc[col_map[key]]
-                val_str = str(cell).strip()
-                # Limpiar flotantes de excel (ej. "1.0" -> "1")
-                if val_str.endswith(".0"): val_str = val_str[:-2]
-                return val_str if pd.notna(cell) and val_str != 'nan' else ""
-            return ""
+    logger.debug(
+        f"get_division_standings({division_name!r}): "
+        f"col_map={col_map}, data_start={data_start}"
+    )
 
-        hero = get_val('hero')
+    standings = []
+    rows_iter = (
+        df.iterrows() if data_start == 0
+        else ((i, df.iloc[i]) for i in range(data_start, len(df)))
+    )
+    for _, row in rows_iter:
+        hero   = _clean(row.iloc[col_map['hero']])
         if not hero:
-            break # Si la celda del héroe está vacía, se acabó la tabla
-
-        rank = get_val('rank')
-        points = get_val('points')
-        played = get_val('played')
-        
+            break
+        rank   = _clean(row.iloc[col_map['rank']])
+        points = _clean(row.iloc[col_map['points']]) if 'points' in col_map else ""
+        played = _clean(row.iloc[col_map['played']]) if 'played' in col_map else ""
         standings.append([rank, hero, played, points])
 
-    headers = ["#", "Player", "Played", "Pts"]
-    return standings, headers
+    return standings, ["#", "Player", "Played", "Pts"]

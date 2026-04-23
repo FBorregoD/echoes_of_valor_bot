@@ -231,6 +231,8 @@ class ScheduleCommands(commands.Cog):
             action_params.setdefault("tournament", "MA")
         elif action == "notify_all":
             action_params.setdefault("week", "default")
+        elif action == "standings":
+            action_params.setdefault("tournament", "MA")
 
         # ── Auto-advancing week ──────────────────────────────────────────
         # If week param is a plain integer (not "default"), store it as
