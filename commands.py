@@ -427,6 +427,36 @@ class TournamentCommands(commands.Cog):
         await ctx.send(result)
 
     @is_bot_admin()
+    @commands.command(name='post_standings')
+    async def post_standings_command(self, ctx, tournament_alias: str = None):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        if tournament_alias is None:
+            tournament_alias = context['tournament']['alias'] if context['tournament'] else None
+        if tournament_alias is None:
+            await ctx.send("❌ No tournament specified. Use `!post_standings <tournament>` or run from a tournament channel.")
+            return
+        tourney = find_tournament(self.tournaments, tournament_alias)
+        if not tourney:
+            await ctx.send(f"❌ Tournament `{tournament_alias}` not found.")
+            return
+        await ctx.send(f"🚀 Posting **{tourney['name']}** standings to division threads...")
+        from tournament_actions import run_post_standings
+        success, not_found, errors = await run_post_standings(
+            destination=ctx.channel,
+            tournaments=self.tournaments,
+            tournament_alias=tournament_alias,
+            force_refresh=True,
+        )
+        result = f"✅ Standings posted to {success} divisions.\n"
+        if not_found:
+            result += f"⚠️ Threads not found: {', '.join(not_found)}\n"
+        if errors:
+            result += f"❌ Errors: {', '.join(errors)}\n"
+        await ctx.send(result)
+
+    @is_bot_admin()
     @commands.command(name='refresh')
     async def refresh_cache(self, ctx):
         context = self._ctx(ctx)
@@ -536,6 +566,7 @@ class TournamentCommands(commands.Cog):
                     "`!sendto <player> [week]` — Send a player their matches by DM.\n"
                     "`!notify_all [week]` — DM all players with pending matches.\n"
                     "`!post_divisions [week] [tournament]` — Post matchups to all division threads.\n"
+                    "`!post_standings [tournament]` — Post standings to all division threads.\n"
                     "`!refresh` — Reload all cached Google Sheets data."
                 ),
                 inline=False
@@ -629,6 +660,13 @@ class TournamentCommands(commands.Cog):
                     "Post this week's matchups to every division thread.",
                     f"`{bot_mention} !post_divisions [week] [tournament]`",
                     f"`{bot_mention} !post_divisions 4 MA`",
+                    "Requires admin. Tournament defaults to the channel's bound tournament."
+                ),
+                'post_standings': (
+                    "!post_standings",
+                    "Post current standings to every division thread of a tournament.",
+                    f"`{bot_mention} !post_standings [tournament]`",
+                    f"`{bot_mention} !post_standings EoV`",
                     "Requires admin. Tournament defaults to the channel's bound tournament."
                 ),
                 'refresh': (
