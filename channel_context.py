@@ -35,20 +35,34 @@ def build_channel_index(guild_channels_config: list[dict]) -> dict:
 
     Also builds a fallback by name:
         index[guild_id]["_by_name"][channel_name_lower] = same dict
+
+    Duplicate channel_ids within a guild are logged and skipped (first entry wins).
     """
+    import logging
+    _log = logging.getLogger(__name__)
+
     index: dict[int, dict] = {}
     for guild_entry in guild_channels_config:
-        gid = guild_entry["guild_id"]
+        gid = guild_entry.get("guild_id")
+        if not gid:
+            continue
         index[gid] = {"_by_name": {}}
         for ch in guild_entry.get("channels", []):
             cid  = ch.get("channel_id")
             name = ch.get("channel_name", "").lower()
             rec  = {
-                "tournament": ch.get("tournament"),   # alias str or None
+                "tournament": ch.get("tournament"),
                 "channel_name": ch.get("channel_name", ""),
             }
             if cid:
-                index[gid][cid] = rec
+                if cid in index[gid]:
+                    _log.warning(
+                        f"config: guild {gid} has duplicate channel_id {cid} "
+                        f"('{ch.get('channel_name')}' vs '{index[gid][cid]['channel_name']}'). "
+                        f"First entry kept — fix the config."
+                    )
+                else:
+                    index[gid][cid] = rec
             if name:
                 index[gid]["_by_name"][name] = rec
     return index
