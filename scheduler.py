@@ -9,6 +9,9 @@ The loop fires tasks when their schedule matches:
 Auto-advancing week: if current_week is set (not NULL), it overrides
 params["week"] and increments by 1 after each successful run.
 current_week = -1 means the season is over and the task is skipped.
+
+Now also validates that the destination channel is allowed according to
+the bot's channel_index (the same restriction as for manual commands).
 """
 
 import sqlite3
@@ -172,6 +175,42 @@ def format_task(row: sqlite3.Row) -> str:
     )
 
 
+# ── Channel allowlist check ────────────────────────────────────────────────────
+
+def _is_channel_allowed(guild: discord.Guild, channel: discord.TextChannel | discord.Thread,
+                        channel_index: dict) -> bool:
+    """
+    Return True if the channel (or its parent, if a thread) is listed in the
+    bot's channel_index for this guild.
+    """
+    if guild is None:
+        return False
+
+    gid = guild.id
+    if gid not in channel_index:
+        return False
+
+    guild_map = channel_index[gid]
+
+    # Determine the base channel to check
+    if isinstance(channel, discord.Thread):
+        base_channel = channel.parent
+    else:
+        base_channel = channel
+
+    if base_channel is None:
+        return False
+
+    # Check by ID
+    if base_channel.id in guild_map:
+        return True
+
+    # Check by name
+    base_name = base_channel.name.lower()
+    by_name = guild_map.get("_by_name", {})
+    return base_name in by_name
+
+
 # ── Scheduler Cog ──────────────────────────────────────────────────────────────
 
 class SchedulerCog(commands.Cog):
@@ -234,6 +273,15 @@ class SchedulerCog(commands.Cog):
         ) or guild.get_channel(row["channel_id"])
         if not destination:
             logger.warning(f"Task {row['id']}: channel/thread not found.")
+            return
+
+        # ── Check if the destination is allowed ──────────────────────────────
+        channel_index = getattr(self.bot, 'channel_index', {})
+        if not _is_channel_allowed(guild, destination, channel_index):
+            logger.warning(
+                f"Task {row['id']}: destination channel {destination.id} "
+                f"('{getattr(destination, 'name', '')}') is not listed in config.json. Skipping."
+            )
             return
 
         params = json.loads(row["params"])

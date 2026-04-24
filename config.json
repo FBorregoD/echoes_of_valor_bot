@@ -9,7 +9,8 @@
                 "player_col": 3,
                 "ancestry_col": 4,
                 "class_col": 5
-            }
+            },
+			"season": 9
         },
         {
             "name": "Meridian Ascension",
@@ -20,7 +21,8 @@
                 "player_col": 3,
                 "ancestry_col": 4,
                 "class_col": 5
-            }
+            },
+			"season": 2
         }
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
@@ -75,22 +77,17 @@
         },
         {
             "_comment": "Servidor real",
-            "guild_id": 555555555555555555,
+            "guild_id": 870492122023866448,
             "channels": [
                 {
-                    "channel_id": 666666666666666666,
-                    "channel_name": "eov-general",
+                    "channel_id": 1180965888732708884,
+                    "channel_name": "echoes-of-valor-hero-league",
                     "tournament": "EoV"
                 },
                 {
-                    "channel_id": 777777777777777777,
-                    "channel_name": "ma-general",
+                    "channel_id": 1320641791309123656,
+                    "channel_name": "meridian-ascension-lvl12",
                     "tournament": "MA"
-                },
-                {
-                    "channel_id": 888888888888888888,
-                    "channel_name": "todos",
-                    "tournament": null
                 }
             ]
         }

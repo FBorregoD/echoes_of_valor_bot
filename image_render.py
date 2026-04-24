@@ -8,6 +8,7 @@ on any deployment environment (Railway, Render, Fly.io, bare Linux, etc.).
 Public API:
     render_matchups(title, week_label, current_rows, pending_rows) -> bytes (PNG)
     render_standings(title, rows, relegation_start) -> bytes (PNG)
+    render_player_matches(player, week, tourney_results) -> bytes (PNG)
 """
 
 from __future__ import annotations
@@ -19,11 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ── Font discovery ────────────────────────────────────────────────────────────
 
 def _find_font(filename: str) -> str:
-    """
-    Locate a font file. Search order:
-      1. fonts/ directory next to this file (bundled — always works)
-      2. Common system paths (fallback for dev environments)
-    """
+    """Locate a font file. Search order: bundled fonts/ dir, then system paths."""
     here = Path(__file__).parent
     bundled = here / "fonts" / filename
     if bundled.exists():
@@ -114,11 +111,13 @@ def _dummy_draw():
     return img, ImageDraw.Draw(img)
 
 def _cell_w(draw, name: str, build: str) -> int:
+    """Width of 'name (build)' pair."""
     return (_tw(draw, name, _f('bold', BASE))
             + 5
             + _tw(draw, f"({build})", _f('regular', BASE - 1)))
 
 def _draw_name_build(draw, x: int, y: int, name: str, build: str):
+    """Draw 'name (build)' at position (x, y), used by matchups and standings."""
     draw.text((x, y + 5), name, font=_f('bold', BASE), fill=TEXT)
     nw = _tw(draw, name, _f('bold', BASE))
     draw.text((x + nw + 4, y + 6), f"({build})", font=_f('regular', BASE - 1), fill=TEXT_BUILD)
@@ -220,20 +219,29 @@ def render_standings(
     min_width: int = 380,
 ) -> bytes:
     """
-    Render standings table. Returns PNG bytes.
-    When build (ancestry+class) is present, each row is two lines tall:
-      bold name on top, smaller dimmed build below — matching the pairings style.
+    Render standings table as PNG. Build is shown on the same line as the name,
+    e.g. 'Player (Ancestry Class)'. If no build info, only the name is shown.
     """
     _, dd = _dummy_draw()
 
-    has_build = len(rows[0]) >= 5 and any(r[4] for r in rows if len(r) >= 5)
-    row_h = 34 if has_build else ROW_H   # taller rows to fit two lines
+    # Always use single-line row height
+    row_h = ROW_H
 
+    # Column widths
     rank_w = max(_tw(dd, str(r[0]), _f('bold', BASE)) for r in rows) + 8
-    name_w = max(_tw(dd, r[1],      _f('bold', BASE)) for r in rows) + 12
-    if has_build:
-        build_max_w = max(_tw(dd, r[4], _f('regular', BASE - 2)) for r in rows if len(r) >= 5 and r[4])
-        name_w = max(name_w, build_max_w + 12)
+
+    # Name column: if build is present, measure combined width
+    has_build = any(len(r) >= 5 and r[4] for r in rows)
+    name_widths = []
+    for r in rows:
+        name = r[1]
+        build = r[4] if len(r) >= 5 else ""
+        if build:
+            name_widths.append(_cell_w(dd, name, build))
+        else:
+            name_widths.append(_tw(dd, name, _f('bold', BASE)))
+    name_w = max(name_widths) + 12
+
     play_w = max(
         _tw(dd, "Played", _f('bold', BASE - 1)),
         max(_tw(dd, str(r[2]), _f('regular', BASE)) for r in rows)
@@ -245,7 +253,7 @@ def render_standings(
 
     content_w = rank_w + name_w + play_w + pts_w
     width = max(min_width, content_w + PAD * 2)
-    name_w += width - (content_w + PAD * 2)   # stretch to fill
+    name_w += width - (content_w + PAD * 2)   # stretch name column to fill
 
     h = HDR_H + SEC_H + len(rows) * row_h + 10
 
@@ -272,7 +280,7 @@ def render_standings(
         name   = row_data[1]
         played = row_data[2]
         pts    = row_data[3]
-        build  = row_data[4] if has_build and len(row_data) >= 5 else ""
+        build  = row_data[4] if len(row_data) >= 5 else ""
 
         # Relegation divider
         if relegation_start and not rel_drawn:
@@ -285,27 +293,25 @@ def render_standings(
 
         draw.rectangle([0, y, width, y + row_h], fill=BG_ALT if i % 2 == 0 else BG)
 
-        # Rank — vertically centred
+        # Rank
         rw = _tw(draw, str(rank), _f('bold', BASE))
-        ry = y + (row_h - BASE) // 2 - 1
-        draw.text((PAD + (rank_w - rw) // 2, ry), str(rank), font=_f('bold', BASE), fill=TEXT_BUILD)
+        draw.text((PAD + (rank_w - rw) // 2, y + 5), str(rank), font=_f('bold', BASE), fill=TEXT_BUILD)
 
+        # Player name (+ build in same line)
         nx = PAD + rank_w
-        if has_build and build:
-            # Two-line: name on top, build smaller below
-            draw.text((nx, y + 4),                name,  font=_f('bold',    BASE),     fill=TEXT)
-            draw.text((nx, y + 4 + BASE + 2),     build, font=_f('regular', BASE - 2), fill=TEXT_BUILD)
+        if build:
+            _draw_name_build(draw, nx, y, name, build)
         else:
-            draw.text((nx, ry), name, font=_f('bold', BASE), fill=TEXT)
+            draw.text((nx, y + 5), name, font=_f('bold', BASE), fill=TEXT)
 
-        # Played — centred
+        # Played
         pw = _tw(draw, str(played), _f('regular', BASE))
-        draw.text((width - PAD - pts_w - play_w + (play_w - pw) // 2, ry),
+        draw.text((width - PAD - pts_w - play_w + (play_w - pw) // 2, y + 5),
                   str(played), font=_f('regular', BASE), fill=TEXT_BUILD)
 
-        # Pts — gold, centred
+        # Pts
         ptw = _tw(draw, str(pts), _f('bold', BASE))
-        draw.text((width - PAD - pts_w + (pts_w - ptw) // 2, ry),
+        draw.text((width - PAD - pts_w + (pts_w - ptw) // 2, y + 5),
                   str(pts), font=_f('bold', BASE), fill=GOLD)
 
         y += row_h
@@ -324,18 +330,9 @@ def render_player_matches(
 ) -> bytes:
     """
     Render per-player match results across tournaments as a PNG image.
-
-    tourney_results: list of dicts with keys:
-        {
-          'tourney_name': str,
-          'current': [(division, p1_name, p1_build, p2_name, p2_build), ...],
-          'pending': [(week_num, division, p1_name, p1_build, p2_name, p2_build), ...],
-        }
-    Only include entries where current or pending is non-empty.
     """
     _, dd = _dummy_draw()
 
-    # ── Measure columns ───────────────────────────────────────────────────────
     div_col_w = 0
     all_p1, all_p2 = [], []
     for t in tourney_results:
@@ -357,21 +354,20 @@ def render_player_matches(
     pend_w  = wk_col_w + row_w
     width   = max(520, max(row_w, pend_w) + PAD * 2)
 
-    # ── Height: header + per-tournament sections ──────────────────────────────
     h = HDR_H
     for t in tourney_results:
         n_cur  = len(t['current'])
         n_pend = len(t['pending'])
         if n_cur or n_pend:
-            h += SEC_H                              # tournament label
+            h += SEC_H
             if n_cur:  h += SEC_H + n_cur  * ROW_H + 2
             if n_pend: h += SEC_H + n_pend * ROW_H + 2
-    h += 6  # bottom accent
+    h += 6
 
     img  = Image.new('RGB', (width, h), BG)
     draw = ImageDraw.Draw(img)
 
-    # ── Header ────────────────────────────────────────────────────────────────
+    # Header
     draw.rectangle([0, 0, width, HDR_H], fill=BG_HEAD)
     draw.rectangle([0, 0, 4, HDR_H], fill=ACCENT)
     title = f"Matches for {player}"
@@ -393,7 +389,6 @@ def render_player_matches(
         else:
             div, p1n, p1b, p2n, p2b = row_data[0], row_data[1], row_data[2], row_data[3], row_data[4]
 
-        # Division label
         dw = _tw(draw, div, _f('bold', BASE - 1))
         draw.text((x + (div_col_w - dw) // 2, y + 6), div, font=_f('bold', BASE - 1), fill=ACCENT)
         x += div_col_w
@@ -410,7 +405,6 @@ def render_player_matches(
         if not cur and not pend:
             continue
 
-        # Tournament section header
         draw.rectangle([0, y, width, y + SEC_H], fill=BG_HEAD)
         draw.rectangle([0, y, 4, y + SEC_H], fill=ACCENT)
         draw.text((PAD + 8, y + 4), t['tourney_name'], font=_f('bold', BASE), fill=TEXT_WHITE)
