@@ -88,6 +88,11 @@
                     "channel_id": 1320641791309123656,
                     "channel_name": "meridian-ascension-lvl12",
                     "tournament": "MA"
+                },
+				{
+                    "channel_id": 1104950545376088075,
+                    "channel_name": "bot-testing",
+                    "tournament": null
                 }
             ]
         }
