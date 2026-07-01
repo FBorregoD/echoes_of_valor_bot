@@ -106,9 +106,11 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             f"`{bot_mention} !c [tournament] [division]`",
             (
                 f"`{bot_mention} !c`  — standings for the current thread\n"
-                f"`{bot_mention} !c eov cadmium`  — explicit tournament + division"
+                f"`{bot_mention} !c eov cadmium`  — explicit tournament + division\n"
+                f"`{bot_mention} !c cadmium text`  — (DM only) force plain text"
             ),
-            "Tournament and division are inferred from the channel/thread when possible."
+            "Tournament and division are inferred from the channel/thread when possible. "
+            "In DMs, you can add `text` at the end to receive plain text instead of an image."
         ),
         'tournaments': (
             "!tournaments",

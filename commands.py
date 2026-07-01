@@ -332,8 +332,102 @@ class TournamentCommands(commands.Cog):
 
     @commands.command(name='standings', aliases=['c'])
     async def standings_command(self, ctx, *args):
-        # ... (sin cambios, ya funciona) ...
-        pass  # (omitido por brevedad, pero debe estar igual que antes)
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+
+        is_dm = ctx.guild is None
+        force_text = False
+        rest = list(args)
+
+        # ── Parse "text" flag (only in DMs) ──
+        if is_dm and rest and rest[-1].lower() == "text":
+            force_text = True
+            rest.pop()
+
+        # ── Parse tournament and division ──
+        tourney_alias = None
+        division_name = None
+        if len(rest) >= 2:
+            tourney_alias = rest[0]
+            division_name = rest[1]
+        elif len(rest) == 1:
+            # Could be tournament or division
+            if find_tournament(self.tournaments, rest[0]):
+                tourney_alias = rest[0]
+            else:
+                division_name = rest[0]
+
+        # Determine which tournaments to process
+        if tourney_alias:
+            tourney = find_tournament(self.tournaments, tourney_alias)
+            if not tourney:
+                await ctx.send(f"❌ Tournament `{tourney_alias}` not found.")
+                return
+            tourneys = [tourney]
+        else:
+            tourneys = self._tourneys_for_ctx(context)
+
+        # Division name: if not given, try to infer from thread context
+        if not division_name:
+            division_name = context.get('division')
+            if not division_name:
+                await ctx.send(
+                    "❌ No division specified. "
+                    "Use `!c [tournament] <division>` or run inside a division thread."
+                )
+                return
+
+        sent_any = False
+        for tourney in tourneys:
+            try:
+                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                rows, headers = get_division_standings(sheets, division_name)
+
+                if not rows:
+                    await ctx.send(f"⚠️ No standings found for **{division_name}** in {tourney['name']}.")
+                    continue
+
+                # Load builds for enriching the text view (optional, but nice)
+                builds = load_hero_builds_from_sheets(
+                    sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+                )
+                rows_with_build = [
+                    row + [builds.get(normalize_name(row[1]), '')]
+                    for row in rows
+                ]
+                text_headers = headers + ['Build'] if rows_with_build else headers
+
+                if force_text:
+                    # Direct text (only in DMs)
+                    chunks = format_table_messages(rows_with_build, text_headers, f"🏆 {tourney['name']} · {division_name}")
+                    for chunk in chunks:
+                        await ctx.send(chunk)
+                    sent_any = True
+                else:
+                    # Try image
+                    try:
+                        img_bytes = render_standings(
+                            title=f"{tourney['name']} · {division_name}",
+                            rows=rows_with_build,
+                        )
+                        await ctx.send(
+                            file=discord.File(io.BytesIO(img_bytes), filename=f"standings_{division_name.lower()}.png")
+                        )
+                        sent_any = True
+                    except Exception as e:
+                        logger.exception(f"standings_command image render failed: {e}")
+                        # Fallback to text
+                        chunks = format_table_messages(rows_with_build, text_headers, f"🏆 {tourney['name']} · {division_name}")
+                        for chunk in chunks:
+                            await ctx.send(chunk)
+                        sent_any = True
+            except Exception as e:
+                logger.error(f"standings_command ({tourney['name']}): {e}", exc_info=True)
+                await ctx.send(f"❌ Error in {tourney['name']}: {e}")
+
+        if not sent_any:
+            await ctx.send(f"⚠️ No standings could be displayed for **{division_name}**.")
 
     # ── Admin commands ─────────────────────────────────────────────────────────
 
