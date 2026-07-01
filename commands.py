@@ -88,37 +88,47 @@ class TournamentCommands(commands.Cog):
         return self.tournaments
 
     async def _get_most_recent_week(self, context: dict) -> int:
-        """Mantener para comandos que no sean !matches (global)."""
+        """Obtiene la semana más reciente con partidos en los torneos del contexto."""
         tourneys = self._tourneys_for_ctx(context)
-        guild = context['channel'].guild if context['channel'] else None
-        guild_id = guild.id if guild else 0
-        latest = get_latest_week(tourneys, guild_id)
-        return latest if latest > 0 else self.default_week
+        max_week = -1
+        for tourney in tourneys:
+            try:
+                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                week = get_latest_week_from_sheets(sheets)
+                if week > max_week:
+                    max_week = week
+            except Exception:
+                continue
+        return max_week if max_week > 0 else self.default_week
 
     async def _get_weeks_per_tournament(self, context: dict, force_week: int = None) -> dict[str, int]:
-        """Usar solo para !matches."""
+        """Obtiene la semana más reciente por torneo, o usa force_week si se especifica."""
         tourneys = self._tourneys_for_ctx(context)
         weeks = {}
-
         for tourney in tourneys:
             if force_week is not None:
                 weeks[tourney['alias']] = force_week
                 continue
-
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
                 latest = get_latest_week_from_sheets(sheets)
-                if latest > 0:
-                    weeks[tourney['alias']] = latest
-                else:
-                    weeks[tourney['alias']] = self.default_week
+                weeks[tourney['alias']] = latest if latest > 0 else self.default_week
             except Exception:
                 weeks[tourney['alias']] = self.default_week
-
         return weeks
+    
+    def _split_pending(self, pending: list) -> tuple[list, list]:
+        normal = []
+        misreported = []
+        for m in pending:
+            if m.get("misreported"):
+                misreported.append(m)
+            else:
+                normal.append(m)
+        return normal, misreported
 
     async def _send_matches_text(self, ctx, player: str, tourney_results: list):
-        """Send match results as plain text (used in DMs and fallback)."""
+        """Envía resultados de partidos en texto plano (fallback o DM forzado)."""
         for t in tourney_results:
             lines = [f"**🏆 {t['tourney_name']}**"]
             if t.get('season_complete', False):
@@ -186,10 +196,13 @@ class TournamentCommands(commands.Cog):
                 except ValueError:
                     pass
 
-        # Get weeks per tournament
-        weeks_per_tournament = await self._get_weeks_per_tournament(context, force_week)
-
         is_dm = ctx.guild is None
+        # El flag text solo se permite en DMs
+        if force_text and not is_dm:
+            await ctx.send("ℹ️ El flag `text` solo funciona en mensajes directos (DMs). Ignorado.")
+            force_text = False
+
+        weeks_per_tournament = await self._get_weeks_per_tournament(context, force_week)
         tourneys = self._tourneys_for_ctx(context)
 
         await ctx.send(f"🔍 Searching for **{player}**...")
@@ -206,11 +219,10 @@ class TournamentCommands(commands.Cog):
                 )
                 current, pending = get_player_matches(sheets, player, week)
 
-                # If no matches and week is beyond latest, check if season complete
+                # Si no hay partidos y la semana supera la última con datos, considerar temporada completa
                 if not current and not pending:
                     latest = get_latest_week_from_sheets(sheets)
                     if latest > 0 and week > latest:
-                        # Season complete for this tournament
                         tourney_results.append({
                             'tourney_name': tourney['name'],
                             'season_complete': True,
@@ -221,10 +233,9 @@ class TournamentCommands(commands.Cog):
                         })
                         continue
                     elif latest <= 0:
-                        # No data at all, use default week but no matches
+                        # Sin datos, continuar
                         pass
 
-                # Build rows as before
                 def fmt(name, b=builds):
                     return (name, b.get(normalize_name(name), '?'))
 
@@ -239,8 +250,7 @@ class TournamentCommands(commands.Cog):
                     finished = m.get('check', '') == 'OK'
                     cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished))
 
-                normal_pend, misreported = _split_pending(pending)  # <-- SIN self.
-
+                normal_pend, misreported = self._split_pending(pending)
                 pend_rows = []
                 for m in normal_pend:
                     ph, opp = pick(m)
@@ -264,23 +274,20 @@ class TournamentCommands(commands.Cog):
                 logger.error(f"matches_command ({tourney['name']}): {e}", exc_info=True)
                 errors.append(f"❌ Error in {tourney['name']}: could not load match data.")
 
-        # Send results
         if errors:
             await ctx.send("\n".join(errors))
 
         if not tourney_results and not errors:
-            # No matches found in any tournament
             if force_week is not None:
                 await ctx.send(f"📅 No matches found for **{player}** in week **{force_week}**.")
             else:
                 await ctx.send(f"📅 No matches found for **{player}** in any tournament.")
             return
 
-        
-        if force_text:
+        if force_text and is_dm:
             await self._send_matches_text(ctx, player, tourney_results)
         else:
-            # Siempre intentar imagen, incluso en DMs
+            # Siempre intentar imagen, incluso en DMs (a menos que se haya forzado texto)
             try:
                 img_bytes = render_player_matches(player, tourney_results)
                 filename = f"matches_{player.lower().replace(' ', '_')}.png"
@@ -295,19 +302,51 @@ class TournamentCommands(commands.Cog):
         if not context['allowed']:
             return
 
-        division_name, week = parse_division_args(args, context['division'])
-        if week is None:
-            week = await self._get_most_recent_week(context)  # <-- restaurado
+        is_dm = ctx.guild is None
+        force_text = False
+        rest = list(args)
 
+        # ── Parse "text" flag (only in DMs) ──
+        if is_dm and rest and rest[-1].lower() == "text":
+            force_text = True
+            rest.pop()
+
+        # ── Parse division and week ──
+        division_name = None
+        week = None
+        if len(rest) >= 2:
+            division_name = rest[0]
+            try:
+                week = int(rest[1])
+            except ValueError:
+                await ctx.send("❌ Week must be a number.")
+                return
+        elif len(rest) == 1:
+            # Could be division or week
+            try:
+                week = int(rest[0])
+            except ValueError:
+                division_name = rest[0]
+
+        # If no args, try to infer division from thread
         if not division_name:
-            await ctx.send(
-                "❌ No division specified. "
-                "Run this command inside a division thread, or use `!d <division> [week]`."
-            )
-            return
+            division_name = context.get('division')
+            if not division_name:
+                await ctx.send(
+                    "❌ No division specified. "
+                    "Run this command inside a division thread, or use `!d <division> [week]`."
+                )
+                return
+
+        # If week not set, get the most recent
+        if week is None:
+            week = await self._get_most_recent_week(context)
+            if week <= 0:
+                week = self.default_week
 
         tourneys = self._tourneys_for_ctx(context)
-        found_any = False
+        sent_any = False
+
         for tourney in tourneys:
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
@@ -315,20 +354,49 @@ class TournamentCommands(commands.Cog):
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
                 current, pending = get_division_matches(sheets, division_name, week)
+
                 if not current and not pending:
                     continue
-                found_any = True
-                await send_division_image(
-                    ctx.channel, tourney['name'], division_name, week, current, pending, builds
-                )
+
+                if force_text and is_dm:
+                    # Texto directo
+                    lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {week}"]
+                    for m in current:
+                        status = " ✓" if m.get('check', '') == "OK" else ""
+                        lines.append(f"{m['player1']} vs {m['player2']}{status}")
+                    if pending:
+                        lines.append("**⏳ Pending:**")
+                        for m in pending:
+                            lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']}")
+                    await ctx.send("\n".join(lines))
+                    sent_any = True
+                else:
+                    # Intentar imagen
+                    try:
+                        await send_division_image(
+                            ctx.channel, tourney['name'], division_name, week,
+                            current, pending, builds
+                        )
+                        sent_any = True
+                    except Exception as e:
+                        logger.exception(f"division_command image render failed: {e}")
+                        # Fallback a texto
+                        lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {week}"]
+                        for m in current:
+                            status = " ✓" if m.get('check', '') == "OK" else ""
+                            lines.append(f"{m['player1']} vs {m['player2']}{status}")
+                        if pending:
+                            lines.append("**⏳ Pending:**")
+                            for m in pending:
+                                lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']}")
+                        await ctx.send("\n".join(lines))
+                        sent_any = True
             except Exception as e:
                 logger.error(f"division_command ({tourney['name']}): {e}", exc_info=True)
                 await ctx.send(f"❌ Error in {tourney['name']}: {e}")
 
-        if not found_any:
-            await ctx.send(
-                f"⚠️ No matches found for division **{division_name}** in week **{week}**."
-            )
+        if not sent_any:
+            await ctx.send(f"⚠️ No matches found for division **{division_name}** in week **{week}**.")
 
     @commands.command(name='standings', aliases=['c'])
     async def standings_command(self, ctx, *args):
@@ -388,7 +456,7 @@ class TournamentCommands(commands.Cog):
                     await ctx.send(f"⚠️ No standings found for **{division_name}** in {tourney['name']}.")
                     continue
 
-                # Load builds for enriching the text view (optional, but nice)
+                # Load builds for enriching the text view
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
@@ -398,8 +466,8 @@ class TournamentCommands(commands.Cog):
                 ]
                 text_headers = headers + ['Build'] if rows_with_build else headers
 
-                if force_text:
-                    # Direct text (only in DMs)
+                if force_text and is_dm:
+                    # Direct text
                     chunks = format_table_messages(rows_with_build, text_headers, f"🏆 {tourney['name']} · {division_name}")
                     for chunk in chunks:
                         await ctx.send(chunk)
@@ -428,7 +496,7 @@ class TournamentCommands(commands.Cog):
 
         if not sent_any:
             await ctx.send(f"⚠️ No standings could be displayed for **{division_name}**.")
-
+            
     # ── Admin commands ─────────────────────────────────────────────────────────
 
     @is_bot_admin()
@@ -437,9 +505,61 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
+
         if week is None:
-            week = await self._get_most_recent_week(context)  # <-- restaurado
-        # ... resto igual ...
+            week = await self._get_most_recent_week(context)
+            if week <= 0:
+                week = self.default_week
+
+        await ctx.send(f"📬 Fetching matches for **{player}** (week {week})...")
+
+        mapping = load_player_mapping(self.mapping_sheet_url)
+        if player not in mapping:
+            await ctx.send(f"❌ No Discord ID found for player **{player}**.")
+            return
+        discord_id = mapping[player]
+
+        success_count = 0
+        for tourney in self._tourneys_for_ctx(context):
+            try:
+                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                builds = load_hero_builds_from_sheets(
+                    sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+                )
+                messages, err = build_matches_message(
+                    tourney, player, week, force_refresh=False, builds=builds
+                )
+                if err:
+                    await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
+                    continue
+                if not messages:
+                    # No hay partidos para este torneo, pero no es error
+                    continue
+
+                # Enviar cada mensaje por DM
+                for msg in messages:
+                    for chunk in split_message(msg):
+                        if not await send_dm_to_player(self.bot, discord_id, chunk):
+                            await ctx.send(f"⚠️ Could not DM {player} for {tourney['name']}.")
+                            break
+                    else:
+                        # Si todos los chunks se enviaron bien, sumamos éxito
+                        success_count += 1
+            except Exception as e:
+                logger.error(f"sendto_command ({tourney['name']}): {e}", exc_info=True)
+                await ctx.send(f"❌ Unexpected error in {tourney['name']}: {e}")
+
+        if success_count > 0:
+            await ctx.send(f"✅ DM(s) sent to **{player}** ({success_count} tournament(s)).")
+        else:
+            try:
+                mention = (await self.bot.fetch_user(discord_id)).mention
+            except Exception:
+                mention = player
+            await ctx.send(
+                f"❌ {mention}, I couldn't send you any DM.\n"
+                "👉 Please enable DMs from server members or check your privacy settings."
+            )
 
     @is_bot_admin()
     @commands.command(name='notify_all')
@@ -447,9 +567,28 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
+
         if week is None:
-            week = await self._get_most_recent_week(context)  # <-- restaurado
-        # ... resto igual ...
+            week = await self._get_most_recent_week(context)
+            if week <= 0:
+                week = self.default_week
+
+        await ctx.send(f"🚀 Gathering players with pending matches for week **{week}**...")
+
+        success, total = await run_notify_all(
+            bot=self.bot,
+            destination=ctx,
+            tournaments=self._tourneys_for_ctx(context),
+            mapping_url=self.mapping_sheet_url,
+            default_week=self.default_week,
+            week_raw=week,
+            force_refresh=False,
+        )
+
+        if total > 0:
+            await ctx.send(f"✅ DMs sent to {success} out of {total} players.")
+        else:
+            await ctx.send("✅ No players with pending matches found.")
 
     @is_bot_admin()
     @commands.command(name='post_divisions')
@@ -457,12 +596,104 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
-        if week is None:
-            week = await self._get_most_recent_week(context)  # <-- restaurado
-        # ... resto igual ...
 
+        if week is None:
+            week = await self._get_most_recent_week(context)
+            if week <= 0:
+                week = self.default_week
+
+        if tournament_alias is None:
+            tournament_alias = context['tournament']['alias'] if context['tournament'] else "MA"
+
+        tourney = find_tournament(self.tournaments, tournament_alias)
+        if not tourney:
+            await ctx.send(f"❌ Tournament `{tournament_alias}` not found.")
+            return
+
+        await ctx.send(f"🚀 Posting **{tourney['name']}** week {week} matchups to threads...")
+
+        success, not_found, errors = await run_post_divisions(
+            destination=ctx.channel,
+            tournaments=self.tournaments,
+            default_week=self.default_week,
+            tournament_alias=tournament_alias,
+            week_raw=week,
+            force_refresh=False,
+        )
+
+        result = f"✅ Posted to {success} divisions."
+        if not_found:
+            result += f"\n⚠️ Threads not found: {', '.join(not_found)}"
+        if errors:
+            result += f"\n❌ Errors: {', '.join(errors)}"
+        await ctx.send(result)
     # ... resto de comandos (post_standings, refresh, debug, help) sin cambios ...
 
+    @is_bot_admin()
+    @commands.command(name='post_standings')
+    async def post_standings_command(self, ctx, tournament_alias: str = None):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+
+        if tournament_alias is None:
+            tournament_alias = context['tournament']['alias'] if context['tournament'] else None
+
+        if tournament_alias is None:
+            await ctx.send("❌ No tournament specified. Use `!post_standings <tournament>` or run from a tournament channel.")
+            return
+
+        tourney = find_tournament(self.tournaments, tournament_alias)
+        if not tourney:
+            await ctx.send(f"❌ Tournament `{tournament_alias}` not found.")
+            return
+
+        await ctx.send(f"🚀 Posting **{tourney['name']}** standings to division threads...")
+
+        success, not_found, errors = await run_post_standings(
+            destination=ctx.channel,
+            tournaments=self.tournaments,
+            tournament_alias=tournament_alias,
+            force_refresh=False,
+        )
+
+        result = f"✅ Standings posted to {success} divisions."
+        if not_found:
+            result += f"\n⚠️ Threads not found: {', '.join(not_found)}"
+        if errors:
+            result += f"\n❌ Errors: {', '.join(errors)}"
+        await ctx.send(result)
+
+    @is_bot_admin()
+    @commands.command(name='refresh')
+    async def refresh_cache(self, ctx):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        await ctx.send("🔄 Refreshing cache... This may take a moment.")
+        for tourney in self.tournaments:
+            try:
+                refresh_tournament_cache(tourney['url'])
+                await ctx.send(f"✅ Refreshed {tourney['name']}")
+            except Exception as e:
+                await ctx.send(f"❌ Error refreshing {tourney['name']}: {e}")
+        try:
+            load_player_mapping(self.mapping_sheet_url, force_refresh=True)
+            await ctx.send("✅ Refreshed player mapping sheet")
+        except Exception as e:
+            await ctx.send(f"❌ Error refreshing mapping: {e}")
+        await ctx.send("🎉 Cache refresh complete!")
+
+    # ── Help ─────────────────────────────────────────────────────────
+        
+    @commands.command(name='help')
+    async def help_command(self, ctx, command_name: str = None):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        bot_mention = f"@{ctx.bot.user.name}"
+        embed = get_help_embed(bot_mention, command_name)
+        await ctx.send(embed=embed)
 
 async def setup(bot, tournaments, mapping_sheet_url, default_week):
     image_scale = bot.config.get('image_scale', 1.0) if hasattr(bot, 'config') else 1.0

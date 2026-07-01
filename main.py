@@ -100,6 +100,8 @@ bot.is_bot_admin = is_bot_admin
 @bot.event
 async def on_ready():
     logger.info(f"Bot online as {bot.user} (ID: {bot.user.id})")
+    logger.info(f"Registered commands: {[c.name for c in bot.commands]}")
+
 
 
 @bot.event
@@ -120,7 +122,7 @@ async def on_command_error(ctx, error):
             f"Use `@{ctx.bot.user.name} !help {ctx.command}` for usage."
         )
     elif isinstance(error, commands.CommandNotFound):
-        pass
+        await ctx.send(f"❌Command unknown. Use `{ctx.prefix}help` to see available commands.")
     else:
         logger.error(f"Unhandled error in command '{ctx.command}': {error}", exc_info=error)
 
