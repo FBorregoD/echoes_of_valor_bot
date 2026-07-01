@@ -1,14 +1,16 @@
 """
-help_data.py — Help embed builders for the tournament bot.
+help.py — Help command embed builder for the tournament bot.
+
+All command descriptions live here so they can be edited independently
+of the main commands module.
 """
 
 import discord
 
 
-def build_help_embed(command_name: str = None, bot_mention: str = "@Bot") -> discord.Embed:
-    """
-    Return an embed for !help or !help <command>.
-    """
+def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
+    """Return a help embed for the bot's commands."""
+
     if command_name is None:
         embed = discord.Embed(
             title="📖 Bot Commands",
@@ -21,7 +23,7 @@ def build_help_embed(command_name: str = None, bot_mention: str = "@Bot") -> dis
         embed.add_field(
             name="🌐 Public",
             value=(
-                "`!matches` / `!m <player> [week]` — Player's matches as image (with text fallback).\n"
+                "`!matches` / `!m <player> [week] [text]` — Player's matches as image (add `text` for plain text in DMs).\n"  
                 "`!division` / `!d [division] [week]` — Division matchups as image.\n"
                 "`!standings` / `!c [tournament] [division]` — Division standings as image.\n"
                 "`!tournaments` — List available tournaments and their aliases."
@@ -72,17 +74,21 @@ def build_help_embed(command_name: str = None, bot_mention: str = "@Bot") -> dis
         embed.set_footer(text=f"Example: {bot_mention} !m Scorium 4  |  !d 4  (inside a division thread)")
         return embed
 
-    # Detailed command help
+    # ── Detailed command help ────────────────────────────────────────────────
     cmd = command_name.lstrip('!').lower()
+    # Alias normalisation
     cmd = {'m': 'matches', 'c': 'standings', 'd': 'division'}.get(cmd, cmd)
 
     help_texts = {
         'matches': (
             "!matches / !m",
             "Show a player's matches for a given week.",
-            f"`{bot_mention} !m <player> [week]`",
-            f"`{bot_mention} !m Scorium 4`",
-            "Posts an image in all contexts (including DMs). Falls back to text if image rendering fails."
+            f"`{bot_mention} !m <player> [week] [text]`",
+            (
+                f"`{bot_mention} !m Scorium 4`  — image\n"
+                f"`{bot_mention} !m Scorium 4 text`  — plain text (DM only)"
+            ),
+            "Posts an image by default. Add `text` at the end to get plain text (only works in DMs). Omitting week uses the most recent week."
         ),
         'division': (
             "!division / !d",
@@ -204,12 +210,13 @@ def build_help_embed(command_name: str = None, bot_mention: str = "@Bot") -> dis
         if note:
             embed.add_field(name="Note", value=note, inline=False)
         return embed
-    else:
-        return discord.Embed(
-            title="Unknown Command",
-            description=(
-                f"`{command_name}` is not recognised. "
-                f"Use `{bot_mention} !help` to see all commands."
-            ),
-            color=discord.Color.red()
-        )
+
+    # Unknown command
+    return discord.Embed(
+        title="Unknown Command",
+        description=(
+            f"`{command_name}` is not recognised. "
+            f"Use `{bot_mention} !help` to see all commands."
+        ),
+        color=discord.Color.red()
+    )

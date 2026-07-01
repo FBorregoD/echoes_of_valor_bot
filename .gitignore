@@ -1,2 +1,7 @@
 .vscode/settings.json
 .vscode
+var/
+var/env.txt
+markdown/
+markdown/*.md
+tasks.db

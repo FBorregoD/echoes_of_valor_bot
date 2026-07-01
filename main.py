@@ -3,6 +3,7 @@ from discord.ext import commands
 import json
 import os
 import logging
+import pathlib
 import asyncio
 from commands import setup as setup_commands
 from schedule_commands import setup_schedule
@@ -11,7 +12,7 @@ from channel_context import build_channel_index
 
 # Logging setup
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -28,23 +29,53 @@ ADMIN_USER_IDS: list[int] = config.get('admin_user_ids', [])
 CHANNEL_INDEX = build_channel_index(config.get('guild_channels', []))
 
 # Token from environment variable (never hardcode or use token.txt in production)
-BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
+def _load_token() -> str:
+    """Return Discord bot token from env var or fallback file."""
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if token:
+        return token
+
+    # Fallback: read from var/env.txt (relative to the bot's directory)
+    env_file = pathlib.Path(__file__).resolve().parent / "var" / "env.txt"
+    if env_file.exists():
+        token = env_file.read_text(encoding="utf-8").strip()
+        if token:
+            logging.getLogger(__name__).info("Using token from var/env.txt")
+            return token
+
+    raise RuntimeError(
+        "Missing DISCORD_BOT_TOKEN environment variable.\n"
+        "You can also place the token in 'var/env.txt'."
+    )
+
+BOT_TOKEN = _load_token()
 
 # Setup bot
 intents = discord.Intents.default()
 intents.message_content = True
 
-async def get_prefix(bot, message):
+def get_prefix(bot, message):
+    # 1. Determinar el prefijo base (personalizado por guild o global)
+    base_prefix = COMMAND_PREFIX
+    if message.guild is not None:
+        guild_index = CHANNEL_INDEX.get(message.guild.id, {})
+        base_prefix = guild_index.get("_prefix", COMMAND_PREFIX)
+
+    # 2. Construir los posibles formatos de mención
     mention_prefixes = [f"<@{bot.user.id}> ", f"<@!{bot.user.id}> "]
+
+    # 3. Si el mensaje empieza con una mención, extraer el texto restante
     for mention in mention_prefixes:
         if message.content.startswith(mention):
             remainder = message.content[len(mention):]
-            if remainder.startswith(COMMAND_PREFIX):
-                return mention + COMMAND_PREFIX
-            return mention
-    return COMMAND_PREFIX
+            # Si después de la mención viene el prefijo base, lo incluimos
+            if remainder.startswith(base_prefix):
+                return [mention + base_prefix]
+            # Si solo hay mención, la devolvemos tal cual
+            return [mention]
+
+    # 4. Sin mención, devolvemos solo el prefijo base
+    return [base_prefix]
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 bot.remove_command('help')
@@ -75,6 +106,7 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
+    print(f"Content: '{message.content}' | author: {message.author} | channel: {message.channel}")
     await bot.process_commands(message)
 
 
