@@ -3,26 +3,14 @@
         {
             "name": "Echoes of Valor",
             "alias": "EoV",
-            "url": "https://docs.google.com/spreadsheets/d/1HZK9mUQv0dsHAUx_wgK0dnm10MwuOPqfPqU847C8Zxo/edit?usp=sharing",
-            "builds_sheet": "hero builds Season 9",
+            "url": "https://docs.google.com/spreadsheets/d/19C1UHkmA7LroihS0C9IkjojU8UC6gSAyx2i_yncY0wk",
+            "builds_sheet": "hero builds Season 10",
             "builds_mapping": {
                 "player_col": 3,
                 "ancestry_col": 4,
                 "class_col": 5
             },
-			"season": 9
-        },
-        {
-            "name": "Meridian Ascension",
-            "alias": "MA",
-            "url": "https://docs.google.com/spreadsheets/d/1gukcGa3nuR3Kw7g-G3enmwy8PE_gtu8nb8K1eAN-agc/edit?usp=sharing",
-            "builds_sheet": "Arma heroum - S2",
-            "builds_mapping": {
-                "player_col": 3,
-                "ancestry_col": 4,
-                "class_col": 5
-            },
-			"season": 2
+			"season": 10
         },
         {
             "name": "Test Echoes of Valor",
@@ -50,7 +38,7 @@
         }
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
-    "default_week": 1,
+    "default_week": 2,
     "command_prefix": "lol ",
     "admin_user_ids": [
         254177975417700352,
