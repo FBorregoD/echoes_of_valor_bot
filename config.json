@@ -39,7 +39,7 @@
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
     "default_week": 2,
-    "command_prefix": "lol ",
+    "command_prefix": "!",
     "admin_user_ids": [
         254177975417700352,
         455045255675510805
@@ -93,17 +93,12 @@
         ,{
             "_comment": "Servidor real",
             "guild_id": 870492122023866448,
-            "prefix": "lol ",
+            "prefix": "!",
             "channels": [
                 {
                     "channel_id": 1180965888732708884,
                     "channel_name": "echoes-of-valor-hero-league",
                     "tournament": "EoV"
-                },
-                {
-                    "channel_id": 1320641791309123656,
-                    "channel_name": "meridian-ascension-lvl12",
-                    "tournament": "MA"
                 },
 				{
                     "channel_id": 1104950545376088075,
