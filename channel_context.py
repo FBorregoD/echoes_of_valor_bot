@@ -47,6 +47,10 @@ def build_channel_index(guild_channels_config: list[dict]) -> dict:
         if not gid:
             continue
         index[gid] = {"_by_name": {}}
+        # Store guild prefix if present
+        prefix = guild_entry.get("prefix")
+        if prefix is not None:
+            index[gid]["_prefix"] = prefix
         for ch in guild_entry.get("channels", []):
             cid  = ch.get("channel_id")
             name = ch.get("channel_name", "").lower()
@@ -56,7 +60,7 @@ def build_channel_index(guild_channels_config: list[dict]) -> dict:
             }
             if cid:
                 if cid in index[gid]:
-                    _log.warning(
+                    logger.warning(
                         f"config: guild {gid} has duplicate channel_id {cid} "
                         f"('{ch.get('channel_name')}' vs '{index[gid][cid]['channel_name']}'). "
                         f"First entry kept — fix the config."

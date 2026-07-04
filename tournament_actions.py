@@ -11,7 +11,6 @@ import logging
 import discord
 
 import io
-import discord
 from image_render import render_matchups
 from match_utils import (
     get_tournament_sheets,
@@ -25,6 +24,7 @@ from match_utils import (
     week_has_matches,
     is_division_sheet,
     player_matches,
+    format_table_messages, 
 )
 
 logger = logging.getLogger(__name__)
@@ -62,36 +62,41 @@ def resolve_week(week_raw: str | int, default_week: int) -> int:
         return default_week
     return int(week_raw)
 
-
 def build_division_image(tourney_name: str, div_name: str, week: int,
                           current: list, pending: list, builds: dict) -> bytes | None:
-    """
-    Render the division matchups as a PNG image (bytes).
-    Returns None if there are no matches at all.
-    """
     def get_build(name): return builds.get(normalize_name(name), "?")
 
     cur_rows = [
-        (m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
+        (m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]),
+         m.get("check", "") == "OK")
         for m in current
     ]
+
+    normal_pend, misreported = _split_pending(pending)
+
     pend_rows = [
         (m["week"], m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
-        for m in pending
+        for m in normal_pend
     ]
-    if not cur_rows and not pend_rows:
+    mis_rows = [
+        (m["week"], m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
+        for m in misreported
+    ]
+
+    if not cur_rows and not pend_rows and not mis_rows:
         return None
+
     return render_matchups(
         title=f"{tourney_name} · {div_name}",
         week_label=f"Week {week}",
         current_rows=cur_rows,
         pending_rows=pend_rows,
+        misreported_rows=mis_rows,
     )
 
 
 async def send_division_image(destination, tourney_name: str, div_name: str, week: int,
                                current: list, pending: list, builds: dict):
-    """Send the matchup image to a Discord channel/thread. Falls back to text on error."""
     try:
         img_bytes = build_division_image(tourney_name, div_name, week, current, pending, builds)
         if img_bytes is None:
@@ -99,21 +104,30 @@ async def send_division_image(destination, tourney_name: str, div_name: str, wee
         filename = f"{div_name.lower()}_week{week}.png"
         await destination.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Image render failed for {div_name}: {e}", exc_info=True)
-        # Fallback: plain text
+        logger.error(f"Image render failed for {div_name}: {e}", exc_info=True)
         lines = [f"**🏆 {tourney_name} · {div_name}** — Week {week}"]
         for m in current:
-            lines.append(f"{m['player1']} vs {m['player2']}")
-        for m in pending:
-            lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']} (pending)")
+            status = " ✓" if m.get("check", "") == "OK" else ""
+            lines.append(f"{m['player1']} vs {m['player2']}{status}")
+        normal_pend, misreported = _split_pending(pending)
+        if normal_pend:
+            lines.append("**⏳ Pending:**")
+            for m in normal_pend:
+                lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']}")
+        if misreported:
+            lines.append("**⚠️ Misreported:**")
+            for m in misreported:
+                lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']}")
         await destination.send("\n".join(lines))
 
 
 def build_pending_dm(player: str, tourney_name: str, pending: list, builds: dict) -> list[str]:
-    """Return a list of DM chunks for a player's pending matches in one tournament."""
+    # Only send reminders for correctly reported (but unplayed) matches
+    ok_pending = [m for m in pending if not m.get("misreported")]
+    if not ok_pending:
+        return []
     rows = []
-    for m in pending:
+    for m in ok_pending:
         ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
         rows.append([
             m['week'], m['division'],
@@ -147,7 +161,13 @@ async def run_post_divisions(
         await destination.send(f"❌ Tournament `{tournament_alias}` not found.")
         return 0, [], []
 
-    sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+    try:
+        sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+    except Exception as e:
+        error_msg = f"❌ Failed to load sheet for **{tourney['name']}**. Check the URL or connection."
+        logger.error(f"Error loading sheets for {tourney['name']}: {e}", exc_info=True)
+        await destination.send(error_msg)
+        return 0, [], [error_msg]
     builds = load_hero_builds_from_sheets(
         sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
     )
@@ -222,7 +242,9 @@ async def run_notify_all(
             )
             tourney_data[tourney['name']] = {'tourney': tourney, 'sheets': sheets, 'builds': builds}
         except Exception as e:
-            await destination.send(f"⚠️ Error loading {tourney['name']}: {e}")
+            error_msg = f"⚠️ Could not load data for {tourney['name']}: {e}"
+            await destination.send(error_msg)
+            continue
 
     # Find players with pending matches
     players_with_pending = {
@@ -287,7 +309,12 @@ async def run_post_standings(
         await destination.send(f"❌ Tournament `{tournament_alias}` not found.")
         return 0, [], []
 
-    sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+    try:
+        sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+    except Exception as e:
+        error_msg = f"❌ Failed to load standings sheet for **{tourney['name']}**. Check URL."
+        await destination.send(error_msg)
+        return 0, [], [error_msg]
     division_names = get_division_sheets(sheets)
     builds = load_hero_builds_from_sheets(
         sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
@@ -397,3 +424,14 @@ def _has_pending(sheets: dict, player: str, week: int) -> bool:
         return bool(pending)
     except Exception:
         return False
+    
+def _split_pending(pending: list) -> tuple[list, list]:
+    """Split pending matches into (normal, misreported)."""
+    normal = []
+    misreported = []
+    for m in pending:
+        if m.get("misreported"):
+            misreported.append(m)
+        else:
+            normal.append(m)
+    return normal, misreported

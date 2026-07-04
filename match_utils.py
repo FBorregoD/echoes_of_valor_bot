@@ -2,6 +2,7 @@ import re
 import time
 import logging
 import unicodedata
+import json
 
 import pandas as pd
 import Googlexcel_noPassword as ggx
@@ -36,9 +37,20 @@ def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
         if cached is not None:
             return cached
     logger.info(f"Fetching sheets from: {tournament_url}")
-    sheets = ggx.data_fromAllSheets(tournament_url)
-    save_cached_sheets(tournament_url, sheets)
-    return sheets
+    max_retries = 2
+    delay = 1  # segundos
+    for attempt in range(max_retries):
+        try:
+            sheets = ggx.data_fromAllSheets(tournament_url)
+            save_cached_sheets(tournament_url, sheets)
+            return sheets
+        except Exception as e:
+            logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {tournament_url}: {e}")
+            if attempt == max_retries - 1:
+                logger.error(f"All retries failed for {tournament_url}: {e}", exc_info=True)
+                raise
+            time.sleep(delay)
+    return None  # no debería llegar
 
 
 def refresh_tournament_cache(tournament_url: str):
@@ -224,7 +236,6 @@ def parse_week_number(week_str: str):
     match = re.search(r'\d+', str(week_str))
     return int(match.group()) if match else None
 
-
 def get_player_matches(sheets_dict: dict, player: str, target_week: int):
     current_matches = []
     pending_matches = []
@@ -254,11 +265,31 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
             if not player1 and not player2:
                 continue
             check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
+
+            # ---- read scores ----
+            score1 = 0
+            score2 = 0
+            total = None
+            try:
+                s1 = row.iloc[4]
+                s2 = row.iloc[5]
+                if pd.notna(s1) and pd.notna(s2):
+                    score1 = float(s1)
+                    score2 = float(s2)
+                    total = score1 + score2
+                else:
+                    total = None
+            except (ValueError, TypeError):
+                total = None
+            # ------------------
+
             match = {
                 "week": current_week,
                 "player1": player1,
                 "player2": player2,
-                "division": sheet_name
+                "division": sheet_name,
+                "check": check,
+                "misreported": (check != "OK" and total is not None and total not in [0,2]),
             }
             if player_matches(player, player1) or player_matches(player, player2):
                 if current_week == target_week:
@@ -266,7 +297,6 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
                 elif current_week < target_week and check != "OK":
                     pending_matches.append(match)
     return current_matches, pending_matches
-
 
 def get_division_matches(sheets_dict: dict, division_name: str, target_week: int):
     current = []
@@ -307,12 +337,31 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
+
+        # ---- read scores for misreport detection ----
+        score1 = 0
+        score2 = 0
+        total = None
+        try:
+            s1 = row.iloc[4]
+            s2 = row.iloc[5]
+            if pd.notna(s1) and pd.notna(s2):
+                score1 = float(s1)
+                score2 = float(s2)
+                total = score1 + score2
+            else:
+                total = None
+        except (ValueError, TypeError):
+            total = None
+        # -------------------------------------------
+
         match = {
             "week": current_week,
             "player1": player1,
             "player2": player2,
             "division": target_sheet,
-            "check": check
+            "check": check,
+            "misreported": (check != "OK" and total is not None and total not in [0,2]),
         }
         if current_week == target_week:
             current.append(match)
@@ -468,6 +517,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
     """
     Build match info as plain-text lines (used for DMs and inline replies).
     Always uses single-line format: Division · Player (build) vs Opponent (build)
+    Adds a ✓ suffix if the match is complete (check == 'OK').
     """
     try:
         sheets = get_tournament_sheets(tournament['url'], force_refresh=force_refresh)
@@ -483,7 +533,8 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
             lines.append(f"**Week {week} matches:**")
             for m in current:
                 ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
-                lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}")
+                status = " ✓" if m.get('check', '') == "OK" else ""
+                lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}{status}")
         else:
             lines.append("📅 No matches found for this week.")
 
@@ -571,17 +622,14 @@ async def send_dm_to_player(bot, discord_id: int, message_content: str) -> bool:
 
 def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[list], list[str]]:
     """
-    Reads the standings table from a division sheet.
+    Reads the standings table from a division sheet, then re‑ranks players by:
+      1. Points (descending)
+      2. Matches played (ascending)
+      3. Hero name (case‑insensitive alphabetical)
 
-    Handles two formats produced by different DataFrame sources:
-      A) ggx / pd.read_csv — Google Sheets CSV omits the blank top row, so the
-         row containing 'Rank', 'Hero', 'Points', 'Matches played' becomes the
-         DataFrame column names.  Data rows start at index 0.
-      B) pd.read_excel / header=None — 'Rank' etc. appear as cell values in a
-         data row (row ~1).  Data rows start after that header row.
-
-    The function detects the format automatically.
+    Returns (sorted_standings, headers) where each row is [rank_str, hero, played_str, pts_str].
     """
+
     target_sheet = None
     for sheet_name in sheets_dict.keys():
         if sheet_name.lower() == division_name.lower():
@@ -621,11 +669,11 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
                 col_map['class'] = c_idx
         return col_map
 
-    # Format A: Rank/Hero are column names (ggx CSV format)
+    # Format A: column names already set (ggx CSV)
     col_map = _map_cols(df.columns)
     data_start = 0
 
-    # Format B: Rank/Hero appear as cell values in a row (xlsx / header=None)
+    # Format B: header row is inside the data (xlsx / header=None)
     if 'rank' not in col_map or 'hero' not in col_map:
         col_map = {}
         data_start = None
@@ -643,11 +691,6 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
         )
         return [], []
 
-    logger.debug(
-        f"get_division_standings({division_name!r}): "
-        f"col_map={col_map}, data_start={data_start}"
-    )
-
     standings = []
     rows_iter = (
         df.iterrows() if data_start == 0
@@ -656,10 +699,101 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
     for _, row in rows_iter:
         hero   = _clean(row.iloc[col_map['hero']])
         if not hero:
-            break
-        rank   = _clean(row.iloc[col_map['rank']])
-        points = _clean(row.iloc[col_map['points']]) if 'points' in col_map else ""
-        played = _clean(row.iloc[col_map['played']]) if 'played' in col_map else ""
-        standings.append([rank, hero, played, points])
+            break          # stop at blank hero row
+        points = _clean(row.iloc[col_map['points']]) if 'points' in col_map else "0"
+        played = _clean(row.iloc[col_map['played']]) if 'played' in col_map else "0"
 
-    return standings, ["#", "Player", "Played", "Pts"]
+        # safely convert to integers, fallback to 0
+        try:
+            pts_int = int(points) if points else 0
+        except ValueError:
+            pts_int = 0
+        try:
+            played_int = int(played) if played else 0
+        except ValueError:
+            played_int = 0
+
+        standings.append([hero, played_int, pts_int])
+
+    # Sort: pts desc, played asc, hero alpha asc
+    standings.sort(key=lambda x: (-x[2], x[1], x[0].lower()))
+
+    # Assign new ranks and convert back to string format
+    ranked = []
+    for i, (hero, played_int, pts_int) in enumerate(standings, start=1):
+        ranked.append([str(i), hero, str(played_int), str(pts_int)])
+
+    return ranked, ["#", "Player", "Played", "Pts"]
+
+# ------------------------------------------------------------
+# Auto-detect most recent week from tournament sheets
+# ------------------------------------------------------------
+
+def get_latest_week_from_sheets(sheets: dict) -> int:
+    """
+    Scan all division sheets in a tournament and return the highest week number
+    that contains at least one match row.
+    Returns -1 if no matches found in any sheet.
+    """
+    max_week = -1
+    for sheet_name, df in sheets.items():
+        if not is_division_sheet(df):
+            continue
+        current_week = None
+        for idx, row in df.iterrows():
+            cell = row.iloc[0]
+            if pd.notna(cell) and str(cell).strip().startswith("Week"):
+                try:
+                    current_week = parse_week_number(str(cell))
+                except Exception:
+                    continue
+            if current_week is not None:
+                p1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+                p2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+                if p1 or p2:
+                    max_week = max(max_week, current_week)
+    return max_week
+
+def get_latest_week(tournaments: list[dict], guild_id: int) -> int:
+    """
+    Return the most recent week that has matches.
+    Priority:
+      1. Scheduled tasks (if any) for this guild.
+      2. Fallback: scan all tournament sheets and take the max week.
+    Falls back to -1 if no weeks found.
+    """
+    # ── Primary: scheduled tasks ──────────────────────────────────────
+    try:
+        from scheduler import list_tasks as get_scheduled_tasks
+    except Exception:
+        get_scheduled_tasks = None
+
+    if get_scheduled_tasks is not None:
+        try:
+            tasks = get_scheduled_tasks(guild_id=guild_id)
+            aliases = {t.get('alias', '').lower() for t in tournaments}
+            aliases.update({t['name'].lower() for t in tournaments})
+
+            max_week_from_schedule = -1
+            for task in tasks:
+                if task["current_week"] is not None and task["current_week"] != -1:
+                    params = json.loads(task["params"])
+                    task_tournament = params.get("tournament", "").lower()
+                    if task_tournament in aliases:
+                        max_week_from_schedule = max(max_week_from_schedule, task["current_week"])
+            if max_week_from_schedule >= 0:
+                return max_week_from_schedule
+        except Exception as e:
+            logger.warning(f"Could not read scheduler tasks for latest week: {e}")
+
+    # ── Fallback: scan all sheets ──────────────────────────────────────
+    max_week = -1
+    for tourney in tournaments:
+        try:
+            sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+            week = get_latest_week_from_sheets(sheets)
+            if week > max_week:
+                max_week = week
+        except Exception as e:
+            logger.warning(f"Error scanning for latest week in {tourney['name']}: {e}")
+    return max_week
