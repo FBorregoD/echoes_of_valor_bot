@@ -10,31 +10,7 @@
                 "ancestry_col": 4,
                 "class_col": 5
             },
-			"season": 10
-        },
-        {
-            "name": "Test Echoes of Valor",
-            "alias": "TEoV",
-            "url": "https://docs.google.com/spreadsheets/d/1WuyB7vIGo4FCQZ26TM0_urVRr4W6EZLw3mTguxy80VI/edit?usp=sharing",
-            "builds_sheet": "hero builds Season 9",
-            "builds_mapping": {
-                "player_col": 3,
-                "ancestry_col": 4,
-                "class_col": 5
-            },
-            "season": 9
-        },
-        {
-            "name": "Test Meridian Ascension",
-            "alias": "TMA",
-            "url": "https://docs.google.com/spreadsheets/d/1lta7BxcPryF72gi9uee9Z71uoEwCH_sIs8cJjMiYPJs/edit?usp=sharing",
-            "builds_sheet": "Arma heroum - S2",
-            "builds_mapping": {
-                "player_col": 3,
-                "ancestry_col": 4,
-                "class_col": 5
-            },
-            "season": 2
+            "season": 10
         }
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
@@ -100,7 +76,7 @@
                     "channel_name": "echoes-of-valor-hero-league",
                     "tournament": "EoV"
                 },
-				{
+                {
                     "channel_id": 1104950545376088075,
                     "channel_name": "bot-testing",
                     "tournament": null
