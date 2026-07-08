@@ -5,3 +5,4 @@ var/env.txt
 markdown/
 markdown/*.md
 tasks.db
+_pychache_/
