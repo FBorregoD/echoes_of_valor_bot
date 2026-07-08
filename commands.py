@@ -47,17 +47,9 @@ def is_bot_admin():
     return commands.check(predicate)
 
 
-# ── Helper global (no necesita self) ──────────────────────────────────────────
 
-def _split_pending(pending: list) -> tuple[list, list]:
-    normal = []
-    misreported = []
-    for m in pending:
-        if m.get("misreported"):
-            misreported.append(m)
-        else:
-            normal.append(m)
-    return normal, misreported
+
+
 
 
 # ── Cog ────────────────────────────────────────────────────────────────────────
@@ -81,7 +73,33 @@ class TournamentCommands(commands.Cog):
             tournaments=self.tournaments,
             find_tournament_fn=find_tournament,
         )
+    # ── Nuevo método de verificación ──────────────────────────────────────────────
 
+    async def _ensure_dm_or_admin(self, ctx):
+        """
+        Raise CheckFailure if command is used in a guild by a non-admin.
+        DMs are always allowed.
+        """
+        if ctx.guild is None:
+            return  # DM always allowed
+        if ctx.author.id in self.bot.admin_user_ids:
+            return  # admin allowed in channels
+        raise commands.CheckFailure(
+            "This command is only available in DMs for regular users. "
+            "Please send me a DM with your request."
+        )
+    # ── Helper global (no necesita self) ──────────────────────────────────────────
+
+    def _split_pending(pending: list) -> tuple[list, list]:
+        normal = []
+        misreported = []
+        for m in pending:
+            if m.get("misreported"):
+                misreported.append(m)
+            else:
+                normal.append(m)
+        return normal, misreported
+    
     def _tourneys_for_ctx(self, context: dict) -> list[dict]:
         if context['tournament']:
             return [context['tournament']]
@@ -101,20 +119,71 @@ class TournamentCommands(commands.Cog):
                 continue
         return max_week if max_week > 0 else self.default_week
 
-    async def _get_weeks_per_tournament(self, context: dict, force_week: int = None) -> dict[str, int]:
-        """Obtiene la semana más reciente por torneo, o usa force_week si se especifica."""
+    async def _get_weeks_per_tournament(self, context: dict, guild_id: int = None, force_week: int = None) -> dict[str, int]:
+        from scheduler import list_tasks
+        import json
         tourneys = self._tourneys_for_ctx(context)
         weeks = {}
+
+        # Obtener tareas del scheduler para este guild
+        tasks = []
+        if guild_id is not None:
+            try:
+                tasks = list_tasks(guild_id=guild_id)
+                logger.debug(f"Found {len(tasks)} tasks for guild {guild_id}")
+            except Exception as e:
+                logger.warning(f"Could not fetch scheduler tasks: {e}")
+        else:
+            logger.debug("guild_id is None, no tasks will be checked")
+
         for tourney in tourneys:
             if force_week is not None:
                 weeks[tourney['alias']] = force_week
                 continue
+
+            # Obtener última semana con partidos
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
                 latest = get_latest_week_from_sheets(sheets)
-                weeks[tourney['alias']] = latest if latest > 0 else self.default_week
-            except Exception:
-                weeks[tourney['alias']] = self.default_week
+                logger.debug(f"Tournament {tourney['alias']}: latest week with matches = {latest}")
+            except Exception as e:
+                latest = -1
+                logger.debug(f"Tournament {tourney['alias']}: error getting latest week: {e}")
+
+            # Buscar tarea de schedule para este torneo
+            schedule_week = None
+            for task in tasks:
+                if task['action'] in ('post_divisions', 'notify_all'):
+                    params = json.loads(task['params'])
+                    task_tournament = params.get('tournament', '').lower()
+                    tourney_alias = tourney['alias'].lower()
+                    logger.debug(f"Comparing task tournament '{task_tournament}' with '{tourney_alias}'")
+                    if task_tournament == tourney_alias:
+                        if task['current_week'] is not None:
+                            schedule_week = task['current_week']
+                            logger.debug(f"Found schedule for {tourney_alias}: current_week = {schedule_week}")
+                            break
+                        else:
+                            logger.debug(f"Task found but current_week is None (fixed week)")
+
+            if schedule_week is not None:
+                if schedule_week == -1:
+                    week = latest if latest > 0 else self.default_week
+                    logger.debug(f"Schedule exhausted, using latest={latest} or default")
+                else:
+                    week = schedule_week
+                    logger.debug(f"Using schedule week: {week}")
+            else:
+                # No hay schedule
+                if latest > 0:
+                    week = latest + 1
+                    logger.debug(f"No schedule, using latest+1 = {week}")
+                else:
+                    week = self.default_week
+                    logger.debug(f"No schedule and no matches, using default_week={self.default_week}")
+
+            weeks[tourney['alias']] = week
+
         return weeks
     
     def _split_pending(self, pending: list) -> tuple[list, list]:
@@ -167,42 +236,44 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
+        await self._ensure_dm_or_admin(ctx) 
         embed = discord.Embed(title="🏆 Available Tournaments", color=discord.Color.gold())
         for t in self._tourneys_for_ctx(context):
             embed.add_field(name=t['name'], value=f"Alias: `{t.get('alias', 'No alias')}`", inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(name='matches', aliases=['m'])
-    async def matches_command(self, ctx, *args):
+    async def matches_command(self, ctx, player: str = None, *args):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
+        await self._ensure_dm_or_admin(ctx)
 
-        if not args:
-            await ctx.send("❌ Please specify a player name. Example: `!m Scorium 9`")
+        if not player:
+            await ctx.send("❌ Please specify a player name. Example: `!m Scorium`")
             return
 
-        player = args[0]
-        force_week = None
+        # Solo permitir el flag 'text' (y solo en DMs)
         force_text = False
-        rest = args[1:]
-
-        for token in rest:
-            if token.lower() == "text":
-                force_text = True
-            else:
-                try:
-                    force_week = int(token)
-                except ValueError:
-                    pass
-
         is_dm = ctx.guild is None
-        # El flag text solo se permite en DMs
-        if force_text and not is_dm:
-            await ctx.send("ℹ️ El flag `text` solo funciona en mensajes directos (DMs). Ignorado.")
-            force_text = False
+        for arg in args:
+            if arg.lower() == "text":
+                if is_dm:
+                    force_text = True
+                else:
+                    await ctx.send("ℹ️ The `text` flag only works in direct messages (DMs). Ignored.")
+            else:
+                # Cualquier otro argumento se ignora y se notifica
+                await ctx.send(f"ℹ️ The `!m` command no longer accepts a week number. The week is determined automatically. Ignoring `{arg}`.")
 
-        weeks_per_tournament = await self._get_weeks_per_tournament(context, force_week)
+        # Obtener semanas automáticamente (sin force_week)
+        guild_id = ctx.guild.id if ctx.guild else None
+       
+        #---    
+        logger.debug(f"Calling _get_weeks_per_tournament with guild_id={ctx.guild.id if ctx.guild else None}")
+        weeks_per_tournament = await self._get_weeks_per_tournament(context, guild_id=guild_id, force_week=None)
+        logger.debug(f"weeks_per_tournament = {weeks_per_tournament}")
+        #---
         tourneys = self._tourneys_for_ctx(context)
 
         await ctx.send(f"🔍 Searching for **{player}**...")
@@ -301,7 +372,7 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
-
+        await self._ensure_dm_or_admin(ctx)
         is_dm = ctx.guild is None
         force_text = False
         rest = list(args)
@@ -403,7 +474,7 @@ class TournamentCommands(commands.Cog):
         context = self._ctx(ctx)
         if not context['allowed']:
             return
-
+        await self._ensure_dm_or_admin(ctx)
         is_dm = ctx.guild is None
         force_text = False
         rest = list(args)
