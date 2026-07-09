@@ -130,11 +130,8 @@ class TournamentCommands(commands.Cog):
         if guild_id is not None:
             try:
                 tasks = list_tasks(guild_id=guild_id)
-                logger.debug(f"Found {len(tasks)} tasks for guild {guild_id}")
             except Exception as e:
                 logger.warning(f"Could not fetch scheduler tasks: {e}")
-        else:
-            logger.debug("guild_id is None, no tasks will be checked")
 
         for tourney in tourneys:
             if force_week is not None:
@@ -145,42 +142,41 @@ class TournamentCommands(commands.Cog):
             try:
                 sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
                 latest = get_latest_week_from_sheets(sheets)
-                logger.debug(f"Tournament {tourney['alias']}: latest week with matches = {latest}")
             except Exception as e:
                 latest = -1
-                logger.debug(f"Tournament {tourney['alias']}: error getting latest week: {e}")
 
             # Buscar tarea de schedule para este torneo
             schedule_week = None
+            fixed_week = None
             for task in tasks:
                 if task['action'] in ('post_divisions', 'notify_all'):
                     params = json.loads(task['params'])
                     task_tournament = params.get('tournament', '').lower()
-                    tourney_alias = tourney['alias'].lower()
-                    logger.debug(f"Comparing task tournament '{task_tournament}' with '{tourney_alias}'")
-                    if task_tournament == tourney_alias:
+                    if task_tournament == tourney['alias'].lower():
                         if task['current_week'] is not None:
-                            schedule_week = task['current_week']
-                            logger.debug(f"Found schedule for {tourney_alias}: current_week = {schedule_week}")
-                            break
+                            # Auto‑advance mode: current_week is the next week to run
+                            # We want to show the last published week = current_week - 1
+                            if task['current_week'] == -1:
+                                schedule_week = -1  # season finished
+                            else:
+                                schedule_week = max(1, task['current_week'] - 1)
                         else:
-                            logger.debug(f"Task found but current_week is None (fixed week)")
+                            # Fixed week: use the 'week' param from the task
+                            fixed_week = int(params.get('week', self.default_week))
+                        break
 
-            if schedule_week is not None:
-                if schedule_week == -1:
-                    week = latest if latest > 0 else self.default_week
-                    logger.debug(f"Schedule exhausted, using latest={latest} or default")
-                else:
-                    week = schedule_week
-                    logger.debug(f"Using schedule week: {week}")
+            if schedule_week == -1:
+                # Season finished: show the latest week with matches, or default
+                week = latest if latest > 0 else self.default_week
+            elif schedule_week is not None:
+                # Auto‑advance: we already subtracted 1, so use it directly
+                week = schedule_week
+            elif fixed_week is not None:
+                # Fixed week from task
+                week = fixed_week
             else:
-                # No hay schedule
-                if latest > 0:
-                    week = latest + 1
-                    logger.debug(f"No schedule, using latest+1 = {week}")
-                else:
-                    week = self.default_week
-                    logger.debug(f"No schedule and no matches, using default_week={self.default_week}")
+                # No schedule: show latest+1 (or default)
+                week = latest + 1 if latest > 0 else self.default_week
 
             weeks[tourney['alias']] = week
 
