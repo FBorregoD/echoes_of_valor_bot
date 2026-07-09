@@ -5,4 +5,5 @@ var/env.txt
 markdown/
 markdown/*.md
 tasks.db
-_pychache_/
+__pycache__
+.pytest_cache

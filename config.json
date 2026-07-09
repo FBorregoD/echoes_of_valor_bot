@@ -11,6 +11,18 @@
                 "class_col": 5
             },
             "season": 10
+        },
+        {
+            "name": "Meridian Ascension",
+            "alias": "MA",
+            "url": "https://docs.google.com/spreadsheets/d/1LFb1l-DxtJVYO2czMNAvRM9HxoWz01Z5FraA8Bg-X6c",
+            "builds_sheet": "Arma heroum - S3",
+            "builds_mapping": {
+                "player_col": 3,
+                "ancestry_col": 4,
+                "class_col": 5
+            },
+            "season": 3
         }
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
@@ -25,7 +37,7 @@
         {
             "_comment": "Servidor de pruebas",
             "guild_id": 825822880565821451,
-            "prefix": "lol ",
+            "prefix": "lel ",
             "channels": [
                 {
                     "channel_id": 1492880227876081774,
@@ -47,7 +59,7 @@
         {
             "_comment": "Servidor de pruebas privado",
             "guild_id": 1496427949862158418,
-            "prefix": "lol ",
+            "prefix": "lel ",
             "channels": [
                 {
                     "channel_id": 1496428213789003826,

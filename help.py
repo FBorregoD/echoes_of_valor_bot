@@ -23,7 +23,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         embed.add_field(
             name="🌐 Public",
             value=(
-                "`!matches` / `!m <player> [week] [text]` — Player's matches as image (add `text` for plain text in DMs).\n"
+                "`!matches` / `!m <player> [text]` — Player's matches as image (add `text` for plain text in DMs).\n"
                 "`!division` / `!d [division] [week] [text]` — Division matchups as image (add `text` in DMs for plain text).\n"
                 "`!standings` / `!c [tournament] [division] [text]` — Division standings as image (add `text` in DMs for plain text).\n"
                 "`!tournaments` — List available tournaments and their aliases."
@@ -82,10 +82,10 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
     help_texts = {
         'matches': (
             "!matches / !m",
-            "Show a player's matches for a given week.",
-            f"`{bot_mention} !m <player> [week] [text]`",
-            f"`{bot_mention} !m Scorium 4 text`  — plain text in DM",
-            "Posts an image by default. Add `text` at the end to get plain text (only works in DMs). Omitting week uses the most recent week."
+            "Show a player's matches for the most recently published week (or the fixed week if no auto‑advance).",
+            f"`{bot_mention} !m <player> [text]`",
+            f"`{bot_mention} !m Scorium text`  — plain text in DM",
+            "The week is determined automatically: if a scheduled task is active, it shows the last week that was published (current_week - 1). If no schedule exists, it shows the latest week with match data. Add `text` at the end to get plain text (only works in DMs)."
         ),
         'division': (
             "!division / !d",
