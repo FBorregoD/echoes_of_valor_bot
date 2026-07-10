@@ -37,7 +37,7 @@
         {
             "_comment": "Servidor de pruebas",
             "guild_id": 825822880565821451,
-            "prefix": "lel ",
+            "prefix": "lol ",
             "channels": [
                 {
                     "channel_id": 1492880227876081774,
@@ -59,7 +59,7 @@
         {
             "_comment": "Servidor de pruebas privado",
             "guild_id": 1496427949862158418,
-            "prefix": "lel ",
+            "prefix": "lol ",
             "channels": [
                 {
                     "channel_id": 1496428213789003826,
@@ -87,6 +87,11 @@
                     "channel_id": 1180965888732708884,
                     "channel_name": "echoes-of-valor-hero-league",
                     "tournament": "EoV"
+                },
+                {
+                    "channel_id": 1320641791309123656,
+                    "channel_name": "meridian-ascension-lvl12",
+                    "tournament": "MA"
                 },
                 {
                     "channel_id": 1104950545376088075,
