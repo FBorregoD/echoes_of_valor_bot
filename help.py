@@ -47,6 +47,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!schedule add <action> <when> [options]` — Create a recurring task.\n"
                 "`!schedule list` — List all scheduled tasks.\n"
                 "`!schedule remove <id>` — Delete a task.\n"
+                "`!schedule remove all` — Delete every task for this server.\n"
+                "`!schedule remove tournament=<alias>` — Delete all tasks for that tournament.\n"
                 "`!schedule info <id>` — Show task details.\n"
                 "`!schedule actions` — List available actions.\n\n"
                 "**When:** `monday 09:00` (weekly) or `every=2h` / `30m` / `1d` (interval)\n"
@@ -57,6 +59,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 f"!schedule add standings monday 09:00 tz=Europe/Madrid tournament=MA\n"
                 f"!schedule add notify_all every=2h week=4\n"
                 f"!schedule remove 3\n"
+                f"!schedule remove tournament=EoV\n"
                 "```"
             ),
             inline=False
@@ -178,25 +181,29 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         ),
         'schedule': (
             "!schedule",
-            "Manage recurring scheduled tasks (post_divisions, notify_all, standings).",
+            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported).",
             (
                 f"`{bot_mention} !schedule add <action> <when> [options]`\n"
                 f"`{bot_mention} !schedule list`\n"
                 f"`{bot_mention} !schedule remove <id>`\n"
+                f"`{bot_mention} !schedule remove all`\n"
+                f"`{bot_mention} !schedule remove tournament=<alias>`\n"
                 f"`{bot_mention} !schedule info <id>`\n"
                 f"`{bot_mention} !schedule actions`"
             ),
             (
                 f"`{bot_mention} !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4`\n"
                 f"`{bot_mention} !schedule add notify_all every=2h week=4`\n"
-                f"`{bot_mention} !schedule remove 3`"
+                f"`{bot_mention} !schedule remove 3`\n"
+                f"`{bot_mention} !schedule remove tournament=EoV`"
             ),
             (
                 "Requires admin.\n"
                 "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
                 "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
-                "**Actions:** `post_divisions`, `notify_all`, `standings`\n"
-                "`standings` does not use `week` — it always posts current standings."
+                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`\n"
+                "`standings` does not use `week` — it always posts current standings.\n"
+                "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament)."
             )
         ),
     }
