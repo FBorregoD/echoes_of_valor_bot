@@ -282,16 +282,29 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
             except (ValueError, TypeError):
                 total = None
             # ------------------
-
             match = {
                 "week": current_week,
                 "player1": player1,
                 "player2": player2,
                 "division": sheet_name,
                 "check": check,
-                "misreported": (check != "OK" and total is not None and total not in [0,2]),
+                "score1": score1,      # NUEVO
+                "score2": score2,      # NUEVO
+                "total": total,        # NUEVO
+                "misreported": (check != "OK" and total is not None and total not in [0, 2]),
             }
             if player_matches(player, player1) or player_matches(player, player2):
+                match = {
+                    "week": current_week,
+                    "player1": player1,
+                    "player2": player2,
+                    "division": sheet_name,
+                    "check": check,
+                    "score1": score1,
+                    "score2": score2,
+                    "total": total,
+                    "misreported": (check != "OK" and total is not None and total not in [0, 2]),
+                }
                 if current_week == target_week:
                     current_matches.append(match)
                 elif current_week < target_week and check != "OK":
@@ -361,7 +374,10 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
             "player2": player2,
             "division": target_sheet,
             "check": check,
-            "misreported": (check != "OK" and total is not None and total not in [0,2]),
+            "score1": score1,      # NUEVO
+            "score2": score2,      # NUEVO
+            "total": total,        # NUEVO
+            "misreported": (check != "OK" and total is not None and total not in [0, 2]),
         }
         if current_week == target_week:
             current.append(match)
@@ -369,6 +385,29 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
             pending.append(match)
     return current, pending
 
+def get_all_misreported_matches(sheets_dict: dict) -> list[dict]:
+    mis = []
+    division_names = [name for name, df in sheets_dict.items() if is_division_sheet(df)]
+    latest_week = get_latest_week_from_sheets(sheets_dict)
+    if latest_week <= 0:
+        return mis
+
+    for div in division_names:
+        for week in range(1, latest_week + 1):
+            current, pending = get_division_matches(sheets_dict, div, week)
+            for match in current + pending:
+                if match.get("misreported"):
+                    mis.append(match)
+
+    # Deduplicar por (semana, división, jugador1_norm, jugador2_norm)
+    seen = set()
+    unique = []
+    for m in mis:
+        key = (m['week'], m['division'], normalize_name(m['player1']), normalize_name(m['player2']))
+        if key not in seen:
+            seen.add(key)
+            unique.append(m)
+    return unique
 
 # Maximum Discord code-block width before switching to card layout
 _TABLE_MAX_WIDTH = 80

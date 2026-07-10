@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
 from discord.ext import commands, tasks
 
-from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week
+from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,10 @@ REGISTERED_ACTIONS = {
     "standings": {
         "description": "Post current standings to each division thread",
         "params": ["tournament"],
+    },
+    "report_misreported": {
+    "description": "Send a DM report of all misreported matches to a specified user.",
+    "params": ["user_id", "tournament"],    
     },
 }
 
@@ -384,6 +388,18 @@ class SchedulerCog(commands.Cog):
             if errors:
                 result += f"\n❌ Errors: {', '.join(errors)}"
             await destination.send(result)
+
+        elif action == "report_misreported":
+            sent, errors = await run_report_misreported(
+                bot=self.bot,
+                destination=destination,
+                tournaments=cog.tournaments,
+                params=params,
+            )
+            if sent > 0:
+                logger.info(f"Task {task_id}: sent misreported report for {sent} tournaments.")
+            if errors:
+                logger.warning(f"Task {task_id} errors: {', '.join(errors)}")
 
         else:
             logger.warning(f"Task {task_id}: unknown action '{action}'.")

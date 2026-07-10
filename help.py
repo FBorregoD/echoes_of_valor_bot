@@ -82,10 +82,11 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
     help_texts = {
         'matches': (
             "!matches / !m",
-            "Show a player's matches for the most recently published week (or the fixed week if no auto‑advance).",
+            "Show a player's matches for the most recently published week (if a scheduled task exists), "
+            "or the next unplayed week (if no task is found).",
             f"`{bot_mention} !m <player> [text]`",
             f"`{bot_mention} !m Scorium text`  — plain text in DM",
-            "The week is determined automatically: if a scheduled task is active, it shows the last week that was published (current_week - 1). If no schedule exists, it shows the latest week with match data. Add `text` at the end to get plain text (only works in DMs)."
+            "The week is determined automatically: if a scheduled task exists, it shows the week *before* the next scheduled run (i.e., the last published week). If no task is found, it shows the week after the last week with match data (the next unplayed week). Add `text` at the end to get plain text (only works in DMs)."
         ),
         'division': (
             "!division / !d",

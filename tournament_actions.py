@@ -25,6 +25,7 @@ from match_utils import (
     is_division_sheet,
     player_matches,
     format_table_messages, 
+    get_all_misreported_matches
 )
 
 logger = logging.getLogger(__name__)
@@ -435,3 +436,86 @@ def _split_pending(pending: list) -> tuple[list, list]:
         else:
             normal.append(m)
     return normal, misreported
+
+# -- report de misreported ------------------------------------------------
+
+async def run_report_misreported(
+    *,
+    bot,
+    destination: discord.abc.Messageable,  # no se usa para mensajes
+    tournaments: list[dict],
+    params: dict,
+) -> tuple[int, list[str]]:
+    """
+    Send DM report of misreported matches to user_id.
+    Returns (number_of_tournaments_with_reports_sent, list_of_error_messages).
+    """
+    user_id = params.get("user_id")
+    if not user_id:
+        return 0, ["Missing user_id parameter."]
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        return 0, [f"Invalid user_id: {user_id}"]
+
+    tournament_filter = params.get("tournament")
+
+    if tournament_filter:
+        tourney = find_tournament(tournaments, tournament_filter)
+        if not tourney:
+            return 0, [f"Tournament '{tournament_filter}' not found."]
+        tourney_list = [tourney]
+    else:
+        tourney_list = tournaments
+
+    sent_count = 0
+    errors = []
+
+    for tourney in tourney_list:
+        try:
+            sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+            builds = load_hero_builds_from_sheets(sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping'))
+            mis = get_all_misreported_matches(sheets)
+
+            if not mis:
+                continue
+
+            # Construir mensaje de texto
+            lines = [f"📋 **Misreported Matches — {tourney['name']}**"]
+            # Agrupar por división
+            by_div = {}
+            for m in mis:
+                div = m["division"]
+                by_div.setdefault(div, []).append(m)
+
+            for div, matches in by_div.items():
+                lines.append(f"\n🏷️ **{div}** ({len(matches)} match{'es' if len(matches)>1 else ''})")
+                for m in matches:
+                    if m['total'] is not None:
+                        reason = f"Total should be 0 or 2, got {m['total']:.0f}"
+                    else:
+                        reason = "Scores missing or invalid"
+                    p1_build = builds.get(normalize_name(m['player1']), '?')
+                    p2_build = builds.get(normalize_name(m['player2']), '?')
+                    lines.append(
+                        f"  Week {m['week']}: {m['player1']} ({p1_build}) vs {m['player2']} ({p2_build}) | "
+                        f"Scores: {m['score1']:.0f}-{m['score2']:.0f} ❌ {reason}"
+                    )
+
+            # Unir todo y dividir en mensajes
+            full_text = "\n".join(lines)
+            chunks = split_message(full_text)
+
+            # Enviar cada chunk por DM
+            user = await bot.fetch_user(user_id)
+            for chunk in chunks:
+                await user.send(chunk)
+            sent_count += 1
+
+        except discord.Forbidden:
+            errors.append(f"{tourney['name']}: User {user_id} has DMs disabled or blocked the bot.")
+        except Exception as e:
+            logger.error(f"Error processing {tourney['name']} for misreported: {e}", exc_info=True)
+            errors.append(f"{tourney['name']}: {e}")
+
+    return sent_count, errors

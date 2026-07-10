@@ -15,6 +15,10 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+# Silenciar logs excesivos de la librería discord.py
+logging.getLogger("discord.gateway").setLevel(logging.INFO)
+logging.getLogger("discord.client").setLevel(logging.INFO)
+logging.getLogger("discord.http").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load configuration
