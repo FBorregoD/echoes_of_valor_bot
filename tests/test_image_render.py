@@ -23,11 +23,13 @@ def test_render_player_matches():
     results = [
         {
             'tourney_name': 'Test',
+            'week': 1,
+            'season_complete': False,
             'current': [('Division', 'Player1', 'Build1', 'Player2', 'Build2', True)],
             'pending': [(2, 'Division', 'Player1', 'Build1', 'Player3', 'Build3')],
             'misreported': [],
         }
     ]
-    data = render_player_matches("Player1", 1, results)
+    data = render_player_matches("Player1", results)
     assert isinstance(data, bytes)
     assert data[:8] == b'\x89PNG\r\n\x1a\n'
