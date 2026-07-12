@@ -12,8 +12,14 @@ current_week = -1 means the season is over and the task is skipped.
 
 Now also validates that the destination channel is allowed according to
 the bot's channel_index (the same restriction as for manual commands).
+
+DB location: on Railway, attach a volume to the service (any mount path,
+e.g. "/data") — Railway injects RAILWAY_VOLUME_MOUNT_PATH automatically,
+and tasks.db is stored there so it survives redeploys. Locally, that
+env var isn't set, so tasks.db is just created in the working directory.
 """
 
+import os
 import sqlite3
 import json
 import logging
@@ -24,11 +30,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
 from discord.ext import commands, tasks
 
-from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week
+from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "tasks.db"
+DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
+DB_PATH = os.path.join(DATA_DIR, "tasks.db")
 
 REGISTERED_ACTIONS = {
     "post_divisions": {
@@ -42,6 +49,10 @@ REGISTERED_ACTIONS = {
     "standings": {
         "description": "Post current standings to each division thread",
         "params": ["tournament"],
+    },
+    "report_misreported": {
+    "description": "Send a DM report of all misreported matches to a specified user.",
+    "params": ["user_id", "tournament"],    
     },
 }
 
@@ -87,7 +98,7 @@ def init_db():
             if col not in existing:
                 conn.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {col} {definition}")
         conn.commit()
-    logger.info("Scheduler DB initialised.")
+    logger.info(f"Scheduler DB initialised at {os.path.abspath(DB_PATH)}.")
 
 
 def add_task(*, action: str, params: dict, guild_id: int, channel_id: int,
@@ -384,6 +395,18 @@ class SchedulerCog(commands.Cog):
             if errors:
                 result += f"\n❌ Errors: {', '.join(errors)}"
             await destination.send(result)
+
+        elif action == "report_misreported":
+            sent, errors = await run_report_misreported(
+                bot=self.bot,
+                destination=destination,
+                tournaments=cog.tournaments,
+                params=params,
+            )
+            if sent > 0:
+                logger.info(f"Task {task_id}: sent misreported report for {sent} tournaments.")
+            if errors:
+                logger.warning(f"Task {task_id} errors: {', '.join(errors)}")
 
         else:
             logger.warning(f"Task {task_id}: unknown action '{action}'.")

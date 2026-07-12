@@ -5,6 +5,8 @@ Commands:
   !schedule add <action> <weekday> <HH:MM> [tz=UTC] [week=default] [tournament=MA] [thread=<id>]
   !schedule list
   !schedule remove <id>
+  !schedule remove all
+  !schedule remove tournament=<alias>
   !schedule info <id>
   !schedule actions        — list available actions and their params
 
@@ -14,6 +16,8 @@ Examples:
   !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4
   !schedule add notify_all friday 18:30 tz=UTC week=default
   !schedule remove 3
+  !schedule remove all
+  !schedule remove tournament=EoV
   !schedule list
 """
 
@@ -110,7 +114,11 @@ class ScheduleCommands(commands.Cog):
         )
         embed.add_field(
             name="Remove a task",
-            value="`!schedule remove <id>`",
+            value=(
+                "`!schedule remove <id>`\n"
+                "`!schedule remove all` — remove every task for this server\n"
+                "`!schedule remove tournament=<alias>` — remove all tasks for that tournament"
+            ),
             inline=False
         )
         embed.add_field(
@@ -359,7 +367,52 @@ class ScheduleCommands(commands.Cog):
     # ------------------------------------------------------------------
     @is_bot_admin()
     @schedule_group.command(name='remove')
-    async def schedule_remove(self, ctx, task_id: int):
+    async def schedule_remove(self, ctx, *, arg: str):
+        """
+        !schedule remove <id>                — remove a single task
+        !schedule remove all                 — remove every task for this server
+        !schedule remove tournament=<alias>  — remove all tasks for that tournament
+        """
+        import json
+        arg = arg.strip()
+
+        if arg.lower() == "all":
+            rows = list_tasks(guild_id=ctx.guild.id)
+            if not rows:
+                await ctx.send("📭 No scheduled tasks for this server.")
+                return
+            for row in rows:
+                remove_task(row["id"])
+            await ctx.send(f"🗑️ Removed all {len(rows)} task(s) for this server.")
+            return
+
+        if arg.lower().startswith("tournament="):
+            tournament_filter = arg.split("=", 1)[1].strip().lower()
+            if not tournament_filter:
+                await ctx.send("❌ Specify a tournament, e.g. `!schedule remove tournament=EoV`.")
+                return
+            rows = list_tasks(guild_id=ctx.guild.id)
+            matched = [
+                row for row in rows
+                if json.loads(row["params"]).get("tournament", "").lower() == tournament_filter
+            ]
+            if not matched:
+                await ctx.send(f"📭 No scheduled tasks found for tournament `{tournament_filter}`.")
+                return
+            for row in matched:
+                remove_task(row["id"])
+            ids = ", ".join(str(row["id"]) for row in matched)
+            await ctx.send(f"🗑️ Removed {len(matched)} task(s) for tournament `{tournament_filter}` (IDs: {ids}).")
+            return
+
+        try:
+            task_id = int(arg)
+        except ValueError:
+            await ctx.send(
+                "❌ Invalid argument. Use a numeric task ID, `all`, or `tournament=<alias>`."
+            )
+            return
+
         row = get_task(task_id)
         if not row:
             await ctx.send(f"❌ No task found with ID `{task_id}`.")
