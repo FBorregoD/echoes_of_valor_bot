@@ -280,17 +280,17 @@ class TournamentCommands(commands.Cog):
                 # Cualquier otro argumento se ignora y se notifica
                 await ctx.send(f"ℹ️ The `!m` command no longer accepts a week number. The week is determined automatically. Ignoring `{arg}`.")
 
+        await ctx.send(f"🔍 Searching for **{player}**...")
+
         # Obtener semanas automáticamente (sin force_week)
         guild_id = ctx.guild.id if ctx.guild else None
-       
-        #---    
+
+        #---
         logger.debug(f"Calling _get_weeks_per_tournament with guild_id={ctx.guild.id if ctx.guild else None}")
         weeks_per_tournament = await self._get_weeks_per_tournament(context, guild_id=guild_id, force_week=None)
         logger.debug(f"weeks_per_tournament = {weeks_per_tournament}")
         #---
         tourneys = self._tourneys_for_ctx(context)
-
-        await ctx.send(f"🔍 Searching for **{player}**...")
 
         tourney_results = []
         errors = []
