@@ -4,6 +4,7 @@ schedule_commands.py — Admin commands to manage scheduled tasks.
 Commands:
   !schedule add <action> <weekday> <HH:MM> [tz=UTC] [week=default] [tournament=MA] [thread=<id>]
   !schedule list
+  !schedule listall        — list tasks across all servers (DM-safe)
   !schedule remove <id>
   !schedule remove all
   !schedule remove tournament=<alias>
@@ -84,6 +85,17 @@ def _when_display(row) -> str:
     return f"daily at {row['hour']:02d}:{row['minute']:02d} ({row['tz']})"
 
 
+async def _require_guild(ctx, hint: str = "") -> bool:
+    """Send an error and return False if this command was invoked outside a server (e.g. in a DM)."""
+    if ctx.guild is None:
+        msg = "❌ This command only works inside a server."
+        if hint:
+            msg += f" {hint}"
+        await ctx.send(msg)
+        return False
+    return True
+
+
 class ScheduleCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -109,7 +121,10 @@ class ScheduleCommands(commands.Cog):
         )
         embed.add_field(
             name="List tasks",
-            value="`!schedule list`",
+            value=(
+                "`!schedule list` — this server only\n"
+                "`!schedule listall` — every server (also works in DMs)"
+            ),
             inline=False
         )
         embed.add_field(
@@ -145,6 +160,9 @@ class ScheduleCommands(commands.Cog):
           !schedule add <action> <weekday> <HH:MM> [options]  — weekly at a fixed day/time
         Options: tz=UTC  week=default  tournament=MA  channel=<id>  thread=<id>
         """
+        if not await _require_guild(ctx):
+            return
+
         # Validate action
         if action not in REGISTERED_ACTIONS:
             known = ", ".join(f"`{k}`" for k in REGISTERED_ACTIONS)
@@ -326,6 +344,8 @@ class ScheduleCommands(commands.Cog):
     @is_bot_admin()
     @schedule_group.command(name='list')
     async def schedule_list(self, ctx):
+        if not await _require_guild(ctx, "Use `!schedule listall` to check tasks from a DM."):
+            return
         rows = list_tasks(guild_id=ctx.guild.id)
         if not rows:
             await ctx.send("📭 No scheduled tasks for this server.")
@@ -363,6 +383,52 @@ class ScheduleCommands(commands.Cog):
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
+    # !schedule listall
+    # ------------------------------------------------------------------
+    @is_bot_admin()
+    @schedule_group.command(name='listall')
+    async def schedule_listall(self, ctx):
+        """List every scheduled task across all servers. Works in DMs too."""
+        import json
+        rows = list_tasks()
+        if not rows:
+            await ctx.send("📭 No scheduled tasks stored anywhere.")
+            return
+
+        by_guild = {}
+        for row in rows:
+            by_guild.setdefault(row["guild_id"], []).append(row)
+
+        embed = discord.Embed(
+            title="🗓️ All Scheduled Tasks (every server)",
+            color=discord.Color.blurple()
+        )
+        for guild_id, guild_rows in by_guild.items():
+            guild = self.bot.get_guild(guild_id)
+            guild_label = f"{guild.name} (`{guild_id}`)" if guild else f"Unknown server (`{guild_id}`)"
+
+            lines = []
+            for row in guild_rows:
+                params_str = ", ".join(
+                    f"{k}={v}" for k, v in json.loads(row["params"]).items()
+                ) or "—"
+                cw = row["current_week"]
+                if cw is None:
+                    week_mode_str = "fixed"
+                elif cw == -1:
+                    week_mode_str = "🏁 done"
+                else:
+                    week_mode_str = f"auto (next: wk {cw})"
+                lines.append(
+                    f"**ID {row['id']}** — `{row['action']}` · {_when_display(row)} · {params_str} · {week_mode_str}"
+                )
+            value = "\n".join(lines)
+            embed.add_field(name=guild_label, value=value[:1024] or "—", inline=False)
+
+        embed.set_footer(text=f"Total: {len(rows)} task(s) across {len(by_guild)} server(s).")
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
     # !schedule remove
     # ------------------------------------------------------------------
     @is_bot_admin()
@@ -373,6 +439,9 @@ class ScheduleCommands(commands.Cog):
         !schedule remove all                 — remove every task for this server
         !schedule remove tournament=<alias>  — remove all tasks for that tournament
         """
+        if not await _require_guild(ctx):
+            return
+
         import json
         arg = arg.strip()
 
@@ -429,6 +498,8 @@ class ScheduleCommands(commands.Cog):
     @is_bot_admin()
     @schedule_group.command(name='info')
     async def schedule_info(self, ctx, task_id: int):
+        if not await _require_guild(ctx):
+            return
         row = get_task(task_id)
         if not row:
             await ctx.send(f"❌ No task found with ID `{task_id}`.")

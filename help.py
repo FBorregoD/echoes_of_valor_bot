@@ -45,7 +45,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             name="🗓️ Admin — Scheduler",
             value=(
                 "`!schedule add <action> <when> [options]` — Create a recurring task.\n"
-                "`!schedule list` — List all scheduled tasks.\n"
+                "`!schedule list` — List scheduled tasks for this server.\n"
+                "`!schedule listall` — List scheduled tasks for every server (works in DMs).\n"
                 "`!schedule remove <id>` — Delete a task.\n"
                 "`!schedule remove all` — Delete every task for this server.\n"
                 "`!schedule remove tournament=<alias>` — Delete all tasks for that tournament.\n"
@@ -185,6 +186,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             (
                 f"`{bot_mention} !schedule add <action> <when> [options]`\n"
                 f"`{bot_mention} !schedule list`\n"
+                f"`{bot_mention} !schedule listall`\n"
                 f"`{bot_mention} !schedule remove <id>`\n"
                 f"`{bot_mention} !schedule remove all`\n"
                 f"`{bot_mention} !schedule remove tournament=<alias>`\n"
@@ -203,7 +205,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
                 "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`\n"
                 "`standings` does not use `week` — it always posts current standings.\n"
-                "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament)."
+                "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
+                "`add`, `list`, `remove` and `info` only work inside a server; use `listall` to check tasks from a DM."
             )
         ),
     }
