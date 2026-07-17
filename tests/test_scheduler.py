@@ -8,7 +8,6 @@ rather than through a real SchedulerCog instance, since the constructor
 starts a discord.ext.tasks background loop that isn't needed here and
 isn't safe to spin up against a plain MagicMock bot.
 """
-import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,7 +25,7 @@ def make_fake_self(tournaments, default_week=2):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_post_divisions_sheets_refetch_does_not_block_event_loop():
+async def test_dispatch_post_divisions_sheets_refetch_does_not_block_event_loop(assert_does_not_block_event_loop):
     """
     Regression test for the 2026-07-17 production incident
     ("Shard ID None heartbeat blocked for more than 10 seconds"). After
@@ -45,30 +44,19 @@ async def test_dispatch_post_divisions_sheets_refetch_does_not_block_event_loop(
         time.sleep(0.25)
         return {}
 
-    async def heartbeat():
-        for _ in range(5):
-            await asyncio.sleep(0.05)
-
     with patch("scheduler.run_post_divisions", new=AsyncMock(return_value=(1, [], []))), \
          patch("scheduler.advance_auto_week", new=AsyncMock()), \
          patch("match_utils.get_tournament_sheets", side_effect=slow_fetch):
-        start = time.monotonic()
-        await asyncio.gather(
+        await assert_does_not_block_event_loop(
             SchedulerCog._dispatch(
                 fake_self, "post_divisions", destination,
                 {"tournament": "MA", "week": "3"}, task_id=1, auto_week=3, end_week=None,
-            ),
-            heartbeat(),
+            )
         )
-        elapsed = time.monotonic() - start
-
-    # Concurrent (fixed): ~0.25s, dominated by the longer of the two.
-    # Sequential (blocked event loop): ~0.25 + 0.25 = 0.5s.
-    assert elapsed < 0.4
 
 
 @pytest.mark.asyncio
-async def test_dispatch_notify_all_sheets_refetch_does_not_block_event_loop():
+async def test_dispatch_notify_all_sheets_refetch_does_not_block_event_loop(assert_does_not_block_event_loop):
     """Same regression, other branch: notify_all's auto-advance sheets refetch."""
     tournaments = [{"name": "Echoes of Valor", "alias": "EoV", "url": "fake_url"}]
     fake_self = make_fake_self(tournaments)
@@ -79,24 +67,15 @@ async def test_dispatch_notify_all_sheets_refetch_does_not_block_event_loop():
         time.sleep(0.25)
         return {}
 
-    async def heartbeat():
-        for _ in range(5):
-            await asyncio.sleep(0.05)
-
     with patch("scheduler.run_notify_all", new=AsyncMock(return_value=(0, 0))), \
          patch("scheduler.advance_auto_week", new=AsyncMock()), \
          patch("match_utils.get_tournament_sheets", side_effect=slow_fetch):
-        start = time.monotonic()
-        await asyncio.gather(
+        await assert_does_not_block_event_loop(
             SchedulerCog._dispatch(
                 fake_self, "notify_all", destination,
                 {"week": "3"}, task_id=2, auto_week=3, end_week=None,
-            ),
-            heartbeat(),
+            )
         )
-        elapsed = time.monotonic() - start
-
-    assert elapsed < 0.4
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,12 @@
 """
-Unit tests for match_utils.get_all_misreported_matches.
+Unit tests for match_utils.get_all_misreported_matches, plus a regression
+test for the 2026-07-17 cache-race finding in get_tournament_sheets.
 Mocks get_division_matches / is_division_sheet / get_latest_week_from_sheets
-so the test only exercises the looping + deduplication logic.
+so the get_all_misreported_matches tests only exercise the looping +
+deduplication logic.
 """
+import threading
+import time
 from unittest.mock import patch
 
 import match_utils
@@ -92,3 +96,39 @@ def test_non_division_sheets_are_skipped():
         result = get_all_misreported_matches({"Hero builds": object()})
 
     assert result == []
+
+
+# ── Cache race regression (2026-07-17) ──────────────────────────────────────
+
+def test_get_tournament_sheets_concurrent_calls_dont_stampede():
+    """
+    Regression test for the 2026-07-17 finding: asyncio.to_thread makes
+    get_tournament_sheets callable from multiple worker threads concurrently.
+    Without the per-URL lock, several threads racing a cold/expired cache
+    entry would all miss it and all hit the network. The lock should make
+    every thread but the first wait, then reuse the first thread's result.
+    """
+    match_utils._memory_cache.clear()
+    match_utils._fetch_locks.clear()
+
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def fake_fetch(url):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        time.sleep(0.1)  # long enough that concurrent threads would overlap without the lock
+        return {"Diamond": "fake_data"}
+
+    with patch.object(match_utils.ggx, "data_fromAllSheets", side_effect=fake_fetch):
+        threads = [
+            threading.Thread(target=match_utils.get_tournament_sheets, args=("http://fake-url", False))
+            for _ in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert call_count == 1

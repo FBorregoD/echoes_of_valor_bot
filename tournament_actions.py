@@ -13,18 +13,18 @@ import discord
 import io
 from image_render import render_matchups
 from match_utils import (
-    get_tournament_sheets,
+    get_tournament_sheets_async,
     get_division_matches,
     get_player_matches,
     load_hero_builds_from_sheets,
-    load_player_mapping,
+    load_player_mapping_async,
     send_dm_to_player,
     split_message,
     normalize_name,
     week_has_matches,
     is_division_sheet,
     player_matches,
-    format_table_messages, 
+    format_table_messages,
     get_all_misreported_matches
 )
 
@@ -163,7 +163,7 @@ async def run_post_divisions(
         return 0, [], []
 
     try:
-        sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=force_refresh)
+        sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
     except Exception as e:
         error_msg = f"❌ Failed to load sheet for **{tourney['name']}**. Check the URL or connection."
         logger.error(f"Error loading sheets for {tourney['name']}: {e}", exc_info=True)
@@ -228,7 +228,7 @@ async def run_notify_all(
     Returns (success_count, total_players_with_pending).
     """
     week = resolve_week(week_raw, default_week)
-    mapping = await asyncio.to_thread(load_player_mapping, mapping_url)
+    mapping = await load_player_mapping_async(mapping_url)
     if not mapping:
         await destination.send("❌ No player mapping loaded. Cannot proceed.")
         return 0, 0
@@ -237,7 +237,7 @@ async def run_notify_all(
     tourney_data = {}
     for tourney in tournaments:
         try:
-            sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=force_refresh)
+            sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
             builds = load_hero_builds_from_sheets(
                 sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
             )
@@ -311,7 +311,7 @@ async def run_post_standings(
         return 0, [], []
 
     try:
-        sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=force_refresh)
+        sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
     except Exception as e:
         error_msg = f"❌ Failed to load standings sheet for **{tourney['name']}**. Check URL."
         await destination.send(error_msg)
@@ -473,7 +473,7 @@ async def run_report_misreported(
 
     for tourney in tourney_list:
         try:
-            sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+            sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
             builds = load_hero_builds_from_sheets(sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping'))
             mis = get_all_misreported_matches(sheets)
 

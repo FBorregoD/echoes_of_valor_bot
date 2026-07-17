@@ -5,21 +5,21 @@ from discord.ext import commands
 import logging
 
 from match_utils import (
-    get_tournament_sheets,
-    refresh_tournament_cache,
+    get_tournament_sheets_async,
+    refresh_tournament_cache_async,
     get_division_matches,
     get_player_matches,
     player_matches,
     load_hero_builds_from_sheets,
-    load_player_mapping,
+    load_player_mapping_async,
     send_dm_to_player,
-    build_matches_message,
+    build_matches_message_async,
     split_message,
     normalize_name,
     get_division_standings,
     format_table_messages,
     get_latest_week,
-    get_latest_week_from_sheets,  
+    get_latest_week_from_sheets,
 )
 from tournament_actions import (
     find_tournament,
@@ -113,7 +113,7 @@ class TournamentCommands(commands.Cog):
         max_week = -1
         for tourney in tourneys:
             try:
-                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
                 week = get_latest_week_from_sheets(sheets)
                 if week > max_week:
                     max_week = week
@@ -121,11 +121,19 @@ class TournamentCommands(commands.Cog):
                 continue
         return max_week if max_week > 0 else self.default_week
 
-    async def _get_weeks_per_tournament(self, context: dict, guild_id: int = None, force_week: int = None) -> dict[str, int]:
+    async def _get_weeks_per_tournament(self, context: dict, guild_id: int = None, force_week: int = None) -> tuple[dict[str, int], dict[str, dict]]:
+        """
+        Returns (weeks, sheets_by_alias). sheets_by_alias holds whatever sheets
+        were already fetched while resolving each tournament's week, so callers
+        (e.g. matches_command) can reuse them instead of re-fetching the same
+        URL a second time. Not every tourney will have an entry — force_week
+        skips the fetch entirely, and a failed fetch leaves it absent too.
+        """
         from scheduler import list_tasks
         import json
         tourneys = self._tourneys_for_ctx(context)
         weeks = {}
+        sheets_by_alias = {}
 
         # Obtener tareas
         tasks = []
@@ -150,7 +158,8 @@ class TournamentCommands(commands.Cog):
 
             # Obtener última semana con partidos
             try:
-                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
+                sheets_by_alias[tourney['alias']] = sheets
                 latest = get_latest_week_from_sheets(sheets)
             except Exception as e:
                 latest = -1
@@ -198,7 +207,7 @@ class TournamentCommands(commands.Cog):
 
             weeks[tourney['alias']] = week
 
-        return weeks
+        return weeks, sheets_by_alias
 
     
     def _split_pending(self, pending: list) -> tuple[list, list]:
@@ -288,7 +297,7 @@ class TournamentCommands(commands.Cog):
 
         #---
         logger.debug(f"Calling _get_weeks_per_tournament with guild_id={ctx.guild.id if ctx.guild else None}")
-        weeks_per_tournament = await self._get_weeks_per_tournament(context, guild_id=guild_id, force_week=None)
+        weeks_per_tournament, sheets_by_alias = await self._get_weeks_per_tournament(context, guild_id=guild_id, force_week=None)
         logger.debug(f"weeks_per_tournament = {weeks_per_tournament}")
         #---
         tourneys = self._tourneys_for_ctx(context)
@@ -299,7 +308,9 @@ class TournamentCommands(commands.Cog):
         for tourney in tourneys:
             week = weeks_per_tournament.get(tourney['alias'], self.default_week)
             try:
-                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+                sheets = sheets_by_alias.get(tourney['alias'])
+                if sheets is None:
+                    sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
@@ -435,7 +446,7 @@ class TournamentCommands(commands.Cog):
 
         for tourney in tourneys:
             try:
-                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
@@ -535,7 +546,7 @@ class TournamentCommands(commands.Cog):
         sent_any = False
         for tourney in tourneys:
             try:
-                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
                 rows, headers = get_division_standings(sheets, division_name)
 
                 if not rows:
@@ -599,7 +610,7 @@ class TournamentCommands(commands.Cog):
 
         await ctx.send(f"📬 Fetching matches for **{player}** (week {week})...")
 
-        mapping = await asyncio.to_thread(load_player_mapping, self.mapping_sheet_url)
+        mapping = await load_player_mapping_async(self.mapping_sheet_url)
         if player not in mapping:
             await ctx.send(f"❌ No Discord ID found for player **{player}**.")
             return
@@ -608,12 +619,12 @@ class TournamentCommands(commands.Cog):
         success_count = 0
         for tourney in self._tourneys_for_ctx(context):
             try:
-                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
-                messages, err = await asyncio.to_thread(
-                    build_matches_message, tourney, player, week, force_refresh=False, builds=builds
+                messages, err = await build_matches_message_async(
+                    tourney, player, week, force_refresh=False, builds=builds
                 )
                 if err:
                     await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
@@ -758,12 +769,12 @@ class TournamentCommands(commands.Cog):
         await ctx.send("🔄 Refreshing cache... This may take a moment.")
         for tourney in self.tournaments:
             try:
-                await asyncio.to_thread(refresh_tournament_cache, tourney['url'])
+                await refresh_tournament_cache_async(tourney['url'])
                 await ctx.send(f"✅ Refreshed {tourney['name']}")
             except Exception as e:
                 await ctx.send(f"❌ Error refreshing {tourney['name']}: {e}")
         try:
-            await asyncio.to_thread(load_player_mapping, self.mapping_sheet_url, force_refresh=True)
+            await load_player_mapping_async(self.mapping_sheet_url, force_refresh=True)
             await ctx.send("✅ Refreshed player mapping sheet")
         except Exception as e:
             await ctx.send(f"❌ Error refreshing mapping: {e}")

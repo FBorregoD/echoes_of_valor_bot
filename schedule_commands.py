@@ -22,6 +22,7 @@ Examples:
   !schedule list
 """
 
+import json
 import re
 import discord
 from discord.ext import commands
@@ -85,15 +86,41 @@ def _when_display(row) -> str:
     return f"daily at {row['hour']:02d}:{row['minute']:02d} ({row['tz']})"
 
 
-async def _require_guild(ctx, hint: str = "") -> bool:
-    """Send an error and return False if this command was invoked outside a server (e.g. in a DM)."""
-    if ctx.guild is None:
-        msg = "❌ This command only works inside a server."
-        if hint:
-            msg += f" {hint}"
-        await ctx.send(msg)
-        return False
-    return True
+def _task_params_and_week_mode(row) -> tuple[str, str]:
+    """
+    Compute (params_str, week_mode_str) for a scheduled_tasks row — shared by
+    schedule_list and schedule_listall so they can't drift out of sync with
+    each other again.
+    """
+    params_str = ", ".join(f"{k}={v}" for k, v in json.loads(row["params"]).items()) or "—"
+    cw = row["current_week"]
+    ew = row["end_week"] if "end_week" in row.keys() else None
+    if cw is None:
+        week_mode_str = "fixed"
+    elif cw == -1:
+        week_mode_str = "🏁 season complete"
+    else:
+        limit = f" → max wk {ew}" if ew else ""
+        week_mode_str = f"auto (next: wk {cw}{limit})"
+    return params_str, week_mode_str
+
+
+def require_guild(hint: str = ""):
+    """
+    Command check: reject with a clear error if used outside a server (e.g.
+    a DM). Raises commands.CheckFailure so rejections flow through the bot's
+    centralized on_command_error handling (same as is_bot_admin()), run
+    before argument conversion, and can't be silently forgotten the way a
+    manual "if not await guard(ctx): return" call in the function body could.
+    """
+    async def predicate(ctx):
+        if ctx.guild is None:
+            msg = "❌ This command only works inside a server."
+            if hint:
+                msg += f" {hint}"
+            raise commands.CheckFailure(msg)
+        return True
+    return commands.check(predicate)
 
 
 class ScheduleCommands(commands.Cog):
@@ -152,6 +179,7 @@ class ScheduleCommands(commands.Cog):
     # !schedule add
     # ------------------------------------------------------------------
     @is_bot_admin()
+    @require_guild()
     @schedule_group.command(name='add')
     async def schedule_add(self, ctx, action: str, when_str: str, *args):
         """
@@ -160,9 +188,6 @@ class ScheduleCommands(commands.Cog):
           !schedule add <action> <weekday> <HH:MM> [options]  — weekly at a fixed day/time
         Options: tz=UTC  week=default  tournament=MA  channel=<id>  thread=<id>
         """
-        if not await _require_guild(ctx):
-            return
-
         # Validate action
         if action not in REGISTERED_ACTIONS:
             known = ", ".join(f"`{k}`" for k in REGISTERED_ACTIONS)
@@ -342,10 +367,9 @@ class ScheduleCommands(commands.Cog):
     # !schedule list
     # ------------------------------------------------------------------
     @is_bot_admin()
+    @require_guild("Use `!schedule listall` to check tasks from a DM.")
     @schedule_group.command(name='list')
     async def schedule_list(self, ctx):
-        if not await _require_guild(ctx, "Use `!schedule listall` to check tasks from a DM."):
-            return
         rows = list_tasks(guild_id=ctx.guild.id)
         if not rows:
             await ctx.send("📭 No scheduled tasks for this server.")
@@ -356,19 +380,8 @@ class ScheduleCommands(commands.Cog):
             color=discord.Color.blurple()
         )
         for row in rows:
-            params_str = ", ".join(
-                f"{k}={v}" for k, v in __import__('json').loads(row["params"]).items()
-            ) or "—"
+            params_str, week_mode_str = _task_params_and_week_mode(row)
             thread_str = f" · thread `{row['thread_id']}`" if row["thread_id"] else ""
-            cw = row["current_week"]
-            ew = row["end_week"] if "end_week" in row.keys() else None
-            if cw is None:
-                week_mode_str = "fixed"
-            elif cw == -1:
-                week_mode_str = "🏁 season complete"
-            else:
-                limit = f" → max wk {ew}" if ew else ""
-                week_mode_str = f"auto (next: wk {cw}{limit})"
             value = (
                 f"**Action:** `{row['action']}`\n"
                 f"**When:** {_when_display(row)}\n"
@@ -389,7 +402,6 @@ class ScheduleCommands(commands.Cog):
     @schedule_group.command(name='listall')
     async def schedule_listall(self, ctx):
         """List every scheduled task across all servers. Works in DMs too."""
-        import json
         rows = list_tasks()
         if not rows:
             await ctx.send("📭 No scheduled tasks stored anywhere.")
@@ -409,16 +421,7 @@ class ScheduleCommands(commands.Cog):
 
             lines = []
             for row in guild_rows:
-                params_str = ", ".join(
-                    f"{k}={v}" for k, v in json.loads(row["params"]).items()
-                ) or "—"
-                cw = row["current_week"]
-                if cw is None:
-                    week_mode_str = "fixed"
-                elif cw == -1:
-                    week_mode_str = "🏁 done"
-                else:
-                    week_mode_str = f"auto (next: wk {cw})"
+                params_str, week_mode_str = _task_params_and_week_mode(row)
                 lines.append(
                     f"**ID {row['id']}** — `{row['action']}` · {_when_display(row)} · {params_str} · {week_mode_str}"
                 )
@@ -432,6 +435,7 @@ class ScheduleCommands(commands.Cog):
     # !schedule remove
     # ------------------------------------------------------------------
     @is_bot_admin()
+    @require_guild()
     @schedule_group.command(name='remove')
     async def schedule_remove(self, ctx, *, arg: str):
         """
@@ -439,10 +443,6 @@ class ScheduleCommands(commands.Cog):
         !schedule remove all                 — remove every task for this server
         !schedule remove tournament=<alias>  — remove all tasks for that tournament
         """
-        if not await _require_guild(ctx):
-            return
-
-        import json
         arg = arg.strip()
 
         if arg.lower() == "all":
@@ -496,10 +496,9 @@ class ScheduleCommands(commands.Cog):
     # !schedule info
     # ------------------------------------------------------------------
     @is_bot_admin()
+    @require_guild()
     @schedule_group.command(name='info')
     async def schedule_info(self, ctx, task_id: int):
-        if not await _require_guild(ctx):
-            return
         row = get_task(task_id)
         if not row:
             await ctx.send(f"❌ No task found with ID `{task_id}`.")
@@ -522,7 +521,6 @@ class ScheduleCommands(commands.Cog):
         embed.add_field(name="Guild ID", value=str(row["guild_id"]), inline=True)
         embed.add_field(name="Channel ID", value=str(row["channel_id"]), inline=True)
         embed.add_field(name="Thread ID", value=str(row["thread_id"]) if row["thread_id"] else "—", inline=True)
-        import json
         params = json.loads(row["params"])
         embed.add_field(
             name="Params",

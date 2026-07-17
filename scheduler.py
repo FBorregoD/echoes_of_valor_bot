@@ -222,6 +222,27 @@ def _is_channel_allowed(guild: discord.Guild, channel: discord.TextChannel | dis
     return base_name in by_name
 
 
+async def _fetch_sheets_by_tourney(tournaments: list[dict]) -> dict:
+    """
+    Fetch every tournament's sheets concurrently (shared by the post_divisions
+    and notify_all auto-advance branches below). Failures are logged and
+    skipped rather than raised, matching the previous per-tournament
+    try/except behavior.
+    """
+    from match_utils import get_tournament_sheets_async
+    results = await asyncio.gather(
+        *(get_tournament_sheets_async(t['url'], force_refresh=False) for t in tournaments),
+        return_exceptions=True,
+    )
+    sheets_by_tourney = {}
+    for t, result in zip(tournaments, results):
+        if isinstance(result, Exception):
+            logger.warning(f"Could not refresh sheets for {t['name']}: {result}")
+            continue
+        sheets_by_tourney[t['name']] = result
+    return sheets_by_tourney
+
+
 # ── Scheduler Cog ──────────────────────────────────────────────────────────────
 
 class SchedulerCog(commands.Cog):
@@ -341,15 +362,7 @@ class SchedulerCog(commands.Cog):
             await destination.send(result)
 
             if auto_week is not None:
-                from match_utils import get_tournament_sheets
-                sheets_by_tourney = {}
-                for t in cog.tournaments:
-                    try:
-                        sheets_by_tourney[t['name']] = await asyncio.to_thread(
-                            get_tournament_sheets, t['url'], force_refresh=False
-                        )
-                    except Exception:
-                        pass
+                sheets_by_tourney = await _fetch_sheets_by_tourney(cog.tournaments)
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
                     sheets_by_tourney=sheets_by_tourney,
@@ -370,15 +383,7 @@ class SchedulerCog(commands.Cog):
             await destination.send(f"✅ DMs sent to {success}/{total} players.")
 
             if auto_week is not None:
-                from match_utils import get_tournament_sheets
-                sheets_by_tourney = {}
-                for t in cog.tournaments:
-                    try:
-                        sheets_by_tourney[t['name']] = await asyncio.to_thread(
-                            get_tournament_sheets, t['url'], force_refresh=False
-                        )
-                    except Exception:
-                        pass
+                sheets_by_tourney = await _fetch_sheets_by_tourney(cog.tournaments)
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
                     sheets_by_tourney=sheets_by_tourney,

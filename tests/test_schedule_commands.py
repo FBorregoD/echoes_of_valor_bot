@@ -1,6 +1,6 @@
 """
 Unit tests for ScheduleCommands: schedule_remove (id / all / tournament=),
-schedule_listall, and the _require_guild guard on the server-only
+schedule_listall, and the require_guild() check on the server-only
 subcommands (add / list / remove / info). Mocks Discord (ctx) and the
 scheduler DB functions.
 """
@@ -8,6 +8,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from discord.ext import commands
 
 from schedule_commands import ScheduleCommands
 
@@ -150,8 +151,21 @@ def make_dm_ctx():
     """A ctx with no guild at all, like a DM invocation."""
     ctx = MagicMock()
     ctx.guild = None
+    # Deterministically pass the is_bot_admin() check so these tests isolate
+    # the guild-required check instead of relying on MagicMock's default
+    # (accidentally truthy) `in` behavior.
+    ctx.author.id = 999
+    ctx.bot.admin_user_ids = [999]
     ctx.send = AsyncMock()
     return ctx
+
+
+async def _run_checks(command, ctx):
+    """Run every check attached to `command` against ctx — bypassed when a
+    test calls `.callback` directly, which is why the require_guild()/
+    is_bot_admin() checks need to be exercised explicitly here."""
+    for check in command.checks:
+        await check(ctx)
 
 
 @pytest.mark.asyncio
@@ -200,20 +214,24 @@ async def test_listall_groups_tasks_by_guild(cog):
     assert "ID 2" in guild_100_field.value
 
 
-# ── _require_guild guard on server-only subcommands ─────────────────────────
+# ── require_guild() check on server-only subcommands ────────────────────────
+# These checks run in discord.py's Command.checks, not the callback body, so
+# calling `.callback(...)` directly (as the tests above do) bypasses them —
+# the checks have to be invoked explicitly to be exercised here.
 
 @pytest.mark.asyncio
 async def test_add_requires_guild(cog):
     ctx = make_dm_ctx()
-    await ScheduleCommands.schedule_add.callback(cog, ctx, "post_divisions", "monday", "09:00")
-    assert "only works inside a server" in ctx.send.call_args[0][0]
+    with pytest.raises(commands.CheckFailure, match="only works inside a server"):
+        await _run_checks(ScheduleCommands.schedule_add, ctx)
 
 
 @pytest.mark.asyncio
 async def test_list_requires_guild_and_hints_listall(cog):
     ctx = make_dm_ctx()
-    await ScheduleCommands.schedule_list.callback(cog, ctx)
-    msg = ctx.send.call_args[0][0]
+    with pytest.raises(commands.CheckFailure) as exc_info:
+        await _run_checks(ScheduleCommands.schedule_list, ctx)
+    msg = str(exc_info.value)
     assert "only works inside a server" in msg
     assert "listall" in msg
 
@@ -221,16 +239,12 @@ async def test_list_requires_guild_and_hints_listall(cog):
 @pytest.mark.asyncio
 async def test_remove_requires_guild(cog):
     ctx = make_dm_ctx()
-    with patch("schedule_commands.list_tasks") as mock_list:
-        await _remove(cog, ctx, "all")
-    mock_list.assert_not_called()
-    assert "only works inside a server" in ctx.send.call_args[0][0]
+    with pytest.raises(commands.CheckFailure, match="only works inside a server"):
+        await _run_checks(ScheduleCommands.schedule_remove, ctx)
 
 
 @pytest.mark.asyncio
 async def test_info_requires_guild(cog):
     ctx = make_dm_ctx()
-    with patch("schedule_commands.get_task") as mock_get:
-        await ScheduleCommands.schedule_info.callback(cog, ctx, 1)
-    mock_get.assert_not_called()
-    assert "only works inside a server" in ctx.send.call_args[0][0]
+    with pytest.raises(commands.CheckFailure, match="only works inside a server"):
+        await _run_checks(ScheduleCommands.schedule_info, ctx)

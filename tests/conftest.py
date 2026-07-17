@@ -1,8 +1,37 @@
+import asyncio
+import time
+
 import pandas as pd
+import pytest
+
 from match_utils import (
     is_division_sheet, get_division_matches, get_player_matches,
     normalize_name, player_matches, get_latest_week
 )
+
+
+@pytest.fixture
+def assert_does_not_block_event_loop():
+    """
+    Shared regression-test helper for the 2026-07-17 production incident
+    (a blocking Google Sheets fetch froze the event loop and blocked the
+    Discord heartbeat). Runs `coro` concurrently with a lightweight
+    heartbeat coroutine and asserts they complete in roughly the time of
+    the longer one (concurrent) rather than their sum (sequential — i.e.
+    the event loop was blocked).
+    """
+    async def _assert(coro, *, threshold: float = 0.4,
+                       heartbeat_ticks: int = 5, heartbeat_interval: float = 0.05):
+        async def heartbeat():
+            for _ in range(heartbeat_ticks):
+                await asyncio.sleep(heartbeat_interval)
+
+        start = time.monotonic()
+        await asyncio.gather(coro, heartbeat())
+        elapsed = time.monotonic() - start
+        assert elapsed < threshold, f"elapsed {elapsed:.3f}s >= {threshold}s threshold — event loop was likely blocked"
+
+    return _assert
 
 def test_is_division_sheet():
     # A valid division sheet must have SCHEDULE and then match rows.

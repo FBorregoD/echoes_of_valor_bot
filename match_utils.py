@@ -1,4 +1,6 @@
+import asyncio
 import re
+import threading
 import time
 import logging
 import unicodedata
@@ -15,6 +17,22 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------
 CACHE_TTL = 300  # seconds (5 minutes)
 _memory_cache: dict[str, tuple] = {}
+
+# get_tournament_sheets runs in a worker thread (via asyncio.to_thread from
+# the async wrappers below), so several requests can now genuinely race on
+# the same URL. Per-URL locks make concurrent misses on a cold/expired cache
+# entry wait for a single in-flight fetch instead of stampeding Google Sheets.
+_fetch_locks: dict[str, threading.Lock] = {}
+_fetch_locks_guard = threading.Lock()
+
+
+def _get_fetch_lock(url: str) -> threading.Lock:
+    with _fetch_locks_guard:
+        lock = _fetch_locks.get(url)
+        if lock is None:
+            lock = threading.Lock()
+            _fetch_locks[url] = lock
+        return lock
 
 
 def load_cached_sheets(url: str):
@@ -36,25 +54,66 @@ def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
         cached = load_cached_sheets(tournament_url)
         if cached is not None:
             return cached
-    logger.info(f"Fetching sheets from: {tournament_url}")
-    max_retries = 2
-    delay = 1  # segundos
-    for attempt in range(max_retries):
-        try:
-            sheets = ggx.data_fromAllSheets(tournament_url)
-            save_cached_sheets(tournament_url, sheets)
-            return sheets
-        except Exception as e:
-            logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {tournament_url}: {e}")
-            if attempt == max_retries - 1:
-                logger.error(f"All retries failed for {tournament_url}: {e}", exc_info=True)
-                raise
-            time.sleep(delay)
-    return None  # no debería llegar
+
+    with _get_fetch_lock(tournament_url):
+        # Re-check: another thread may have just finished fetching while we
+        # were waiting for the lock.
+        if not force_refresh:
+            cached = load_cached_sheets(tournament_url)
+            if cached is not None:
+                return cached
+
+        logger.info(f"Fetching sheets from: {tournament_url}")
+        max_retries = 2
+        delay = 1  # segundos
+        for attempt in range(max_retries):
+            try:
+                sheets = ggx.data_fromAllSheets(tournament_url)
+                save_cached_sheets(tournament_url, sheets)
+                return sheets
+            except Exception as e:
+                logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {tournament_url}: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"All retries failed for {tournament_url}: {e}", exc_info=True)
+                    raise
+                time.sleep(delay)
+        return None  # no debería llegar
 
 
 def refresh_tournament_cache(tournament_url: str):
     return get_tournament_sheets(tournament_url, force_refresh=True)
+
+
+# ------------------------------------------------------------
+# Async wrappers — the single place that offloads the blocking,
+# timeout-less requests calls above onto a worker thread. Every async
+# call site should go through these instead of calling the sync
+# functions (or asyncio.to_thread) directly, so the offload + bounded
+# wait behavior lives in one spot instead of being repeated at each
+# call site.
+#
+# asyncio.wait_for bounds how long the *caller* waits — it does not (and
+# cannot) cancel the underlying blocking call, since Googlexcel_noPassword
+# exposes no timeout hook. A hung fetch still occupies a thread-pool worker
+# until it eventually returns or errors; this only stops individual
+# commands/tasks from hanging forever from the user's point of view.
+# ------------------------------------------------------------
+DEFAULT_FETCH_TIMEOUT = 30  # seconds
+
+
+async def get_tournament_sheets_async(tournament_url: str, force_refresh: bool = False,
+                                       timeout: float = DEFAULT_FETCH_TIMEOUT):
+    return await asyncio.wait_for(
+        asyncio.to_thread(get_tournament_sheets, tournament_url, force_refresh),
+        timeout=timeout,
+    )
+
+
+async def refresh_tournament_cache_async(tournament_url: str, timeout: float = DEFAULT_FETCH_TIMEOUT):
+    return await asyncio.wait_for(
+        asyncio.to_thread(refresh_tournament_cache, tournament_url),
+        timeout=timeout,
+    )
 
 
 # ------------------------------------------------------------
@@ -590,6 +649,15 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
         return None, f"Error in {tournament['name']}: {e}"
 
 
+async def build_matches_message_async(tournament: dict, player: str, week: int,
+                                       force_refresh: bool = False, builds: dict = None,
+                                       timeout: float = DEFAULT_FETCH_TIMEOUT):
+    return await asyncio.wait_for(
+        asyncio.to_thread(build_matches_message, tournament, player, week, force_refresh, builds),
+        timeout=timeout,
+    )
+
+
 # ------------------------------------------------------------
 # Player mapping
 # ------------------------------------------------------------
@@ -599,30 +667,43 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
         cached = load_cached_sheets(sheet_url)
         if cached is not None and isinstance(cached, dict):
             return cached
-    try:
-        sheets = ggx.data_fromAllSheets(sheet_url)
-        if not sheets:
-            return mapping
-        df = next(iter(sheets.values()))
-        for idx, row in df.iterrows():
-            player = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
-            id_val = row.iloc[1]
-            if pd.isna(id_val):
-                continue
-            try:
-                discord_id = int(float(id_val))
-            except (ValueError, TypeError):
-                id_str = str(id_val).strip()
-                if id_str.isdigit():
-                    discord_id = int(id_str)
-                else:
+    with _get_fetch_lock(sheet_url):
+        if not force_refresh:
+            cached = load_cached_sheets(sheet_url)
+            if cached is not None and isinstance(cached, dict):
+                return cached
+        try:
+            sheets = ggx.data_fromAllSheets(sheet_url)
+            if not sheets:
+                return mapping
+            df = next(iter(sheets.values()))
+            for idx, row in df.iterrows():
+                player = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
+                id_val = row.iloc[1]
+                if pd.isna(id_val):
                     continue
-            if player and discord_id and player.lower() not in ["player name", "playername"]:
-                mapping[player] = discord_id
-        save_cached_sheets(sheet_url, mapping)
-    except Exception as e:
-        logger.error(f"Error loading player mapping: {e}", exc_info=True)
+                try:
+                    discord_id = int(float(id_val))
+                except (ValueError, TypeError):
+                    id_str = str(id_val).strip()
+                    if id_str.isdigit():
+                        discord_id = int(id_str)
+                    else:
+                        continue
+                if player and discord_id and player.lower() not in ["player name", "playername"]:
+                    mapping[player] = discord_id
+            save_cached_sheets(sheet_url, mapping)
+        except Exception as e:
+            logger.error(f"Error loading player mapping: {e}", exc_info=True)
     return mapping
+
+
+async def load_player_mapping_async(sheet_url: str, force_refresh: bool = False,
+                                     timeout: float = DEFAULT_FETCH_TIMEOUT) -> dict:
+    return await asyncio.wait_for(
+        asyncio.to_thread(load_player_mapping, sheet_url, force_refresh),
+        timeout=timeout,
+    )
 
 
 
