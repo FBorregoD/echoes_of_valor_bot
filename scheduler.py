@@ -345,7 +345,9 @@ class SchedulerCog(commands.Cog):
                 sheets_by_tourney = {}
                 for t in cog.tournaments:
                     try:
-                        sheets_by_tourney[t['name']] = get_tournament_sheets(t['url'], force_refresh=False)
+                        sheets_by_tourney[t['name']] = await asyncio.to_thread(
+                            get_tournament_sheets, t['url'], force_refresh=False
+                        )
                     except Exception:
                         pass
                 await advance_auto_week(
@@ -372,7 +374,9 @@ class SchedulerCog(commands.Cog):
                 sheets_by_tourney = {}
                 for t in cog.tournaments:
                     try:
-                        sheets_by_tourney[t['name']] = get_tournament_sheets(t['url'], force_refresh=False)
+                        sheets_by_tourney[t['name']] = await asyncio.to_thread(
+                            get_tournament_sheets, t['url'], force_refresh=False
+                        )
                     except Exception:
                         pass
                 await advance_auto_week(

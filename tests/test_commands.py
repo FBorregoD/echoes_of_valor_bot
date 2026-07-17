@@ -2,7 +2,9 @@
 Tests for help.py (doesn't need Discord) and TournamentCommands._get_weeks_per_tournament
 (week-resolution logic; mocks Google Sheets and the scheduler DB).
 """
+import asyncio
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -114,3 +116,34 @@ async def test_weeks_force_week_overrides_everything(cog):
          patch("scheduler.list_tasks", return_value=[task]):
         weeks = await cog._get_weeks_per_tournament(CONTEXT, guild_id=123, force_week=42)
     assert weeks["EoV"] == 42
+
+
+# ── Blocking-I/O regression (2026-07-17 production incident) ───────────────
+
+@pytest.mark.asyncio
+async def test_get_most_recent_week_does_not_block_event_loop(cog):
+    """
+    Regression test for the 2026-07-17 production incident: get_tournament_sheets
+    does a synchronous, un-timeout-ed HTTP call under the hood. Called directly
+    from async code it froze the whole event loop for 20+ seconds, blocking the
+    Discord heartbeat ("Shard ID None heartbeat blocked") and risking a forced
+    gateway disconnect. It must run via asyncio.to_thread so a slow/hanging
+    fetch can't stall anything else the bot is doing concurrently.
+    """
+    def slow_fetch(url, force_refresh=False):
+        time.sleep(0.25)
+        return {}
+
+    async def heartbeat():
+        for _ in range(5):
+            await asyncio.sleep(0.05)
+
+    with patch("commands.get_tournament_sheets", side_effect=slow_fetch), \
+         patch("commands.get_latest_week_from_sheets", return_value=3):
+        start = time.monotonic()
+        await asyncio.gather(cog._get_most_recent_week(CONTEXT), heartbeat())
+        elapsed = time.monotonic() - start
+
+    # Concurrent (fixed): ~0.25s, dominated by the longer of the two.
+    # Sequential (blocked event loop): ~0.25 + 0.25 = 0.5s.
+    assert elapsed < 0.4

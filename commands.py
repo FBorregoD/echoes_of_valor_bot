@@ -1,3 +1,4 @@
+import asyncio
 import io
 import discord
 from discord.ext import commands
@@ -112,7 +113,7 @@ class TournamentCommands(commands.Cog):
         max_week = -1
         for tourney in tourneys:
             try:
-                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
                 week = get_latest_week_from_sheets(sheets)
                 if week > max_week:
                     max_week = week
@@ -149,7 +150,7 @@ class TournamentCommands(commands.Cog):
 
             # Obtener última semana con partidos
             try:
-                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
                 latest = get_latest_week_from_sheets(sheets)
             except Exception as e:
                 latest = -1
@@ -298,7 +299,7 @@ class TournamentCommands(commands.Cog):
         for tourney in tourneys:
             week = weeks_per_tournament.get(tourney['alias'], self.default_week)
             try:
-                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
@@ -434,7 +435,7 @@ class TournamentCommands(commands.Cog):
 
         for tourney in tourneys:
             try:
-                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
@@ -534,7 +535,7 @@ class TournamentCommands(commands.Cog):
         sent_any = False
         for tourney in tourneys:
             try:
-                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
                 rows, headers = get_division_standings(sheets, division_name)
 
                 if not rows:
@@ -598,7 +599,7 @@ class TournamentCommands(commands.Cog):
 
         await ctx.send(f"📬 Fetching matches for **{player}** (week {week})...")
 
-        mapping = load_player_mapping(self.mapping_sheet_url)
+        mapping = await asyncio.to_thread(load_player_mapping, self.mapping_sheet_url)
         if player not in mapping:
             await ctx.send(f"❌ No Discord ID found for player **{player}**.")
             return
@@ -607,12 +608,12 @@ class TournamentCommands(commands.Cog):
         success_count = 0
         for tourney in self._tourneys_for_ctx(context):
             try:
-                sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+                sheets = await asyncio.to_thread(get_tournament_sheets, tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
-                messages, err = build_matches_message(
-                    tourney, player, week, force_refresh=False, builds=builds
+                messages, err = await asyncio.to_thread(
+                    build_matches_message, tourney, player, week, force_refresh=False, builds=builds
                 )
                 if err:
                     await ctx.send(f"⚠️ Error in {tourney['name']}: {err}")
@@ -757,12 +758,12 @@ class TournamentCommands(commands.Cog):
         await ctx.send("🔄 Refreshing cache... This may take a moment.")
         for tourney in self.tournaments:
             try:
-                refresh_tournament_cache(tourney['url'])
+                await asyncio.to_thread(refresh_tournament_cache, tourney['url'])
                 await ctx.send(f"✅ Refreshed {tourney['name']}")
             except Exception as e:
                 await ctx.send(f"❌ Error refreshing {tourney['name']}: {e}")
         try:
-            load_player_mapping(self.mapping_sheet_url, force_refresh=True)
+            await asyncio.to_thread(load_player_mapping, self.mapping_sheet_url, force_refresh=True)
             await ctx.send("✅ Refreshed player mapping sheet")
         except Exception as e:
             await ctx.send(f"❌ Error refreshing mapping: {e}")
