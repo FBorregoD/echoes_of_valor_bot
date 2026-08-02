@@ -1,5 +1,6 @@
 .vscode/settings.json
 .vscode
+.claude/
 var/
 var/env.txt
 markdown/
