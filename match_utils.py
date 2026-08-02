@@ -120,13 +120,25 @@ async def refresh_tournament_cache_async(tournament_url: str, timeout: float = D
 # Helper: normalize names
 # ------------------------------------------------------------
 def normalize_name(name: str) -> str:
-    """Normalize player name: lowercase, remove extra spaces, normalize hyphens."""
+    """
+    Normalize player name: lowercase, collapse whitespace, normalize hyphens,
+    fold Latin accents to their base letter (e.g. 'é' -> 'e'). Non-Latin
+    scripts (CJK, Cyrillic, etc.) are preserved rather than stripped — the
+    previous `.encode('ascii', 'ignore')` approach silently deleted them,
+    collapsing every non-Latin name to the same empty string and colliding
+    in anything keyed by this function (hero-build lookups, misreported-match
+    dedup, !subscribe's per-player dedup key).
+    """
     if not name:
         return ""
-    name = unicodedata.normalize('NFKD', str(name))
-    name = name.encode('ascii', 'ignore').decode('ascii')
+    name = str(name)
+    # Normalize dash variants to a plain hyphen before any other processing —
+    # doing this after the accent fold would be too late, since NFKD leaves
+    # dash characters untouched (they have no decomposition).
     name = re.sub(r'[–—−]', '-', name)
     name = re.sub(r'\s*-\s*', '-', name)
+    name = unicodedata.normalize('NFKD', name)
+    name = ''.join(ch for ch in name if not unicodedata.combining(ch))
     return ' '.join(name.lower().split())
 
 

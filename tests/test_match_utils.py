@@ -1,6 +1,7 @@
 """
 Unit tests for match_utils.get_all_misreported_matches, plus a regression
-test for the 2026-07-17 cache-race finding in get_tournament_sheets.
+test for the 2026-07-17 cache-race finding in get_tournament_sheets, and
+for the 2026-07-17 normalize_name non-Latin-name collision bug.
 Mocks get_division_matches / is_division_sheet / get_latest_week_from_sheets
 so the get_all_misreported_matches tests only exercise the looping +
 deduplication logic.
@@ -10,6 +11,7 @@ import time
 from unittest.mock import patch
 
 import match_utils
+from match_utils import normalize_name
 from match_utils import get_all_misreported_matches
 
 
@@ -132,3 +134,47 @@ def test_get_tournament_sheets_concurrent_calls_dont_stampede():
             t.join()
 
     assert call_count == 1
+
+
+# ── normalize_name (2026-07-17 non-Latin collision + dash-stripping bugs) ───
+
+def test_normalize_name_preserves_distinct_non_latin_names():
+    """
+    Regression test: normalize_name used to run .encode('ascii', 'ignore'),
+    which silently deletes any non-Latin-script character. Two different
+    players with e.g. Japanese or Cyrillic names both collapsed to the same
+    empty string, colliding wherever normalize_name is used as a dedup/lookup
+    key (hero-build lookups, misreported-match dedup, !subscribe's player_key).
+    """
+    assert normalize_name("田中") != ""
+    assert normalize_name("Иванов") != ""
+    assert normalize_name("田中") != normalize_name("Иванов")
+    # Case-folding still applies to scripts that have case (Cyrillic does, CJK doesn't).
+    assert normalize_name("Иванов") == normalize_name("иванов")
+
+
+def test_normalize_name_folds_latin_accents():
+    """Accented Latin names should still fold to their base ASCII letters."""
+    assert normalize_name("José") == "jose"
+    assert normalize_name("François") == "francois"
+
+
+def test_normalize_name_converts_typographic_dashes_to_hyphen():
+    """
+    Regression test: en-dash/em-dash/minus were being deleted (not converted)
+    because the ASCII-strip ran before the dash-normalization regex, so a
+    player registered with a "smart" dash (common from copy-pasting out of
+    Word/Docs) wouldn't match the same name typed with a plain hyphen.
+    """
+    assert normalize_name("Scor–ium Prime") == normalize_name("Scor-ium Prime")
+    assert normalize_name("Scor—ium Prime") == normalize_name("Scor-ium Prime")
+    assert "-" in normalize_name("Scor–ium Prime")
+
+
+def test_normalize_name_collapses_whitespace_and_lowercases():
+    assert normalize_name("  DblDubz   -   Lil Nikki  ") == "dbldubz-lil nikki"
+
+
+def test_normalize_name_empty_input():
+    assert normalize_name("") == ""
+    assert normalize_name(None) == ""

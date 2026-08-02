@@ -24,13 +24,14 @@ import sqlite3
 import json
 import logging
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord.ext import commands, tasks
 
 from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported
+from match_utils import normalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,11 @@ REGISTERED_ACTIONS = {
     },
     "report_misreported": {
     "description": "Send a DM report of all misreported matches to a specified user.",
-    "params": ["user_id", "tournament"],    
+    "params": ["user_id", "tournament"],
+    },
+    "notify_subscribed_players": {
+        "description": "DM every subscriber their subscribed player's matches (as !m <player> would show).",
+        "params": [],
     },
 }
 
@@ -97,6 +102,18 @@ def init_db():
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {col} {definition}")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                player     TEXT    NOT NULL,   -- as typed by the user, for display
+                player_key TEXT    NOT NULL,   -- normalize_name(player), for de-duping/lookup
+                text_flag  INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                UNIQUE(user_id)   -- at most one active subscription per user
+            )
+        """)
         conn.commit()
     logger.info(f"Scheduler DB initialised at {os.path.abspath(DB_PATH)}.")
 
@@ -139,6 +156,13 @@ def get_task(task_id: int) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
 
 
+def list_tasks_by_action(action: str) -> list[sqlite3.Row]:
+    with _get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM scheduled_tasks WHERE action = ? ORDER BY id", (action,)
+        ).fetchall()
+
+
 def update_last_run(task_id: int, ts: str):
     with _get_conn() as conn:
         conn.execute("UPDATE scheduled_tasks SET last_run = ? WHERE id = ?", (ts, task_id))
@@ -149,6 +173,54 @@ def update_current_week(task_id: int, week: int | None):
     with _get_conn() as conn:
         conn.execute("UPDATE scheduled_tasks SET current_week = ? WHERE id = ?", (week, task_id))
         conn.commit()
+
+
+# ── Subscriptions (!subscribe / !unsubscribe) ───────────────────────────────────
+
+def add_subscription(user_id: int, player: str, text_flag: bool) -> None:
+    """
+    Insert a subscription for user_id. Each user may have at most one active
+    subscription at a time — raises ValueError if they already have one
+    (the caller should tell them to !unsubscribe first). This also guards
+    against a race between two concurrent calls for the same user_id: only
+    one INSERT can win against the table's UNIQUE(user_id) constraint, the
+    other raises here too instead of silently overwriting.
+    """
+    player = player.strip()
+    if not player:
+        raise ValueError("player must not be empty")
+    with _get_conn() as conn:
+        existing = conn.execute(
+            "SELECT player FROM subscriptions WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f"user {user_id} is already subscribed to '{existing['player']}'")
+        try:
+            conn.execute(
+                """INSERT INTO subscriptions (user_id, player, player_key, text_flag, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, player, normalize_name(player), int(text_flag), datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError(f"user {user_id} is already subscribed to a player")
+
+
+def remove_all_subscriptions(user_id: int) -> int:
+    """Delete every subscription for user_id. Returns how many rows were removed."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def list_subscriptions(user_id: int | None = None) -> list[sqlite3.Row]:
+    with _get_conn() as conn:
+        if user_id is not None:
+            return conn.execute(
+                "SELECT * FROM subscriptions WHERE user_id = ? ORDER BY player", (user_id,)
+            ).fetchall()
+        return conn.execute("SELECT * FROM subscriptions ORDER BY user_id, player").fetchall()
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
@@ -163,6 +235,31 @@ def _format_interval(minutes: int) -> str:
     h, m = divmod(rem, 60)
     parts = [f"{d}d"] + ([f"{h}h"] if h else []) + ([f"{m}m"] if m else [])
     return "every " + " ".join(parts)
+
+
+def describe_schedule_gmt(row: sqlite3.Row) -> str:
+    """
+    Human-readable schedule description for user-facing messages (e.g. the
+    !subscribe confirmation), with weekly times converted to GMT/UTC so it
+    reads the same regardless of the task's configured timezone.
+    """
+    if row["interval_minutes"]:
+        return _format_interval(row["interval_minutes"])
+    if row["weekday"] is not None:
+        try:
+            tz = ZoneInfo(row["tz"])
+        except ZoneInfoNotFoundError:
+            tz = timezone.utc
+        # Anchor on the next occurrence of that weekday so DST is resolved
+        # the way it will actually be when the task next fires.
+        now = datetime.now(tz)
+        days_ahead = (row["weekday"] - now.weekday()) % 7
+        local_dt = (now + timedelta(days=days_ahead)).replace(
+            hour=row["hour"], minute=row["minute"], second=0, microsecond=0
+        )
+        utc_dt = local_dt.astimezone(timezone.utc)
+        return f"{WEEKDAY_NAMES[utc_dt.weekday()]} at {utc_dt.strftime('%H:%M')} GMT"
+    return f"daily at {row['hour']:02d}:{row['minute']:02d} GMT"
 
 
 def format_task(row: sqlite3.Row) -> str:
@@ -416,6 +513,29 @@ class SchedulerCog(commands.Cog):
                 logger.info(f"Task {task_id}: sent misreported report for {sent} tournaments.")
             if errors:
                 logger.warning(f"Task {task_id} errors: {', '.join(errors)}")
+
+        elif action == "notify_subscribed_players":
+            subs = list_subscriptions()
+            sent, failed = 0, 0
+            for row in subs:
+                try:
+                    user = await self.bot.fetch_user(row["user_id"])
+                    await cog._build_and_send_player_matches(
+                        user, row["player"], bool(row["text_flag"]),
+                        guild_id=None, context={'tournament': None},
+                    )
+                    sent += 1
+                except Exception as e:
+                    failed += 1
+                    logger.warning(
+                        f"Task {task_id}: notify_subscribed_players failed for "
+                        f"user {row['user_id']} / {row['player']}: {e}"
+                    )
+                await asyncio.sleep(0.5)
+            result = f"✅ Notified {sent} subscriber(s)."
+            if failed:
+                result += f" ⚠️ {failed} failed (DMs disabled or error)."
+            await destination.send(result)
 
         else:
             logger.warning(f"Task {task_id}: unknown action '{action}'.")

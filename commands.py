@@ -49,6 +49,17 @@ def is_bot_admin():
     return commands.check(predicate)
 
 
+def require_dm():
+    """Command check: reject if used inside a server — this command only works in DMs, for any user."""
+    async def predicate(ctx):
+        if ctx.guild is not None:
+            raise commands.CheckFailure(
+                "❌ This command only works in DMs. Please send me a direct message."
+            )
+        return True
+    return commands.check(predicate)
+
+
 
 
 
@@ -220,7 +231,7 @@ class TournamentCommands(commands.Cog):
                 normal.append(m)
         return normal, misreported
 
-    async def _send_matches_text(self, ctx, player: str, tourney_results: list):
+    async def _send_matches_text(self, destination, player: str, tourney_results: list):
         """Envía resultados de partidos en texto plano (fallback o DM forzado)."""
         for t in tourney_results:
             lines = [f"**🏆 {t['tourney_name']}**"]
@@ -244,62 +255,21 @@ class TournamentCommands(commands.Cog):
                 if not t['current'] and not t['pending'] and not t['misreported']:
                     lines.append(f"📅 No matches found for week {week}.")
             for chunk in split_message("\n".join(lines)):
-                await ctx.send(chunk)
+                await destination.send(chunk)
 
-    # ── Public commands ────────────────────────────────────────────────────────
-
-    @commands.command(name='ping')
-    async def ping(self, ctx):
-        context = self._ctx(ctx)
-        if not context['allowed']:
-            return
-        await ctx.send("Pong!")
-
-    @commands.command(name='tournaments')
-    async def list_tournaments(self, ctx):
-        context = self._ctx(ctx)
-        if not context['allowed']:
-            return
-        await self._ensure_dm_or_admin(ctx) 
-        embed = discord.Embed(title="🏆 Available Tournaments", color=discord.Color.gold())
-        for t in self._tourneys_for_ctx(context):
-            embed.add_field(name=t['name'], value=f"Alias: `{t.get('alias', 'No alias')}`", inline=False)
-        await ctx.send(embed=embed)
-
-    @commands.command(name='matches', aliases=['m'])
-    async def matches_command(self, ctx, player: str = None, *args):
-        context = self._ctx(ctx)
-        if not context['allowed']:
-            return
-        await self._ensure_dm_or_admin(ctx)
-
-        if not player:
-            await ctx.send("❌ Please specify a player name. Example: `!m Scorium`")
-            return
-
-        # Solo permitir el flag 'text' (y solo en DMs)
-        force_text = False
-        is_dm = ctx.guild is None
-        for arg in args:
-            if arg.lower() == "text":
-                if is_dm:
-                    force_text = True
-                else:
-                    await ctx.send("ℹ️ The `text` flag only works in direct messages (DMs). Ignored.")
-            else:
-                # Cualquier otro argumento se ignora y se notifica
-                await ctx.send(f"ℹ️ The `!m` command no longer accepts a week number. The week is determined automatically. Ignoring `{arg}`.")
-
-        await ctx.send(f"🔍 Searching for **{player}**...")
-
-        # Obtener semanas automáticamente (sin force_week)
-        guild_id = ctx.guild.id if ctx.guild else None
-
-        #---
-        logger.debug(f"Calling _get_weeks_per_tournament with guild_id={ctx.guild.id if ctx.guild else None}")
-        weeks_per_tournament, sheets_by_alias = await self._get_weeks_per_tournament(context, guild_id=guild_id, force_week=None)
-        logger.debug(f"weeks_per_tournament = {weeks_per_tournament}")
-        #---
+    async def _build_and_send_player_matches(self, destination, player: str, force_text: bool,
+                                              guild_id: int | None, context: dict):
+        """
+        Build a player's match results across the tournaments in `context`
+        and send them to `destination` (anything with .send() — a ctx, a
+        fetched discord.User, a DM channel) exactly like !m does. Shared by
+        matches_command and the notify_subscribed_players scheduled action,
+        which has no ctx/channel to resolve a context from (pass
+        {'tournament': None} for a DM-equivalent, all-tournaments lookup).
+        """
+        weeks_per_tournament, sheets_by_alias = await self._get_weeks_per_tournament(
+            context, guild_id=guild_id, force_week=None
+        )
         tourneys = self._tourneys_for_ctx(context)
 
         tourney_results = []
@@ -368,30 +338,147 @@ class TournamentCommands(commands.Cog):
                         'misreported': mis_rows,
                     })
             except Exception as e:
-                logger.error(f"matches_command ({tourney['name']}): {e}", exc_info=True)
+                logger.error(f"_build_and_send_player_matches ({tourney['name']}): {e}", exc_info=True)
                 errors.append(f"❌ Error in {tourney['name']}: could not load match data.")
 
         if errors:
-            await ctx.send("\n".join(errors))
+            await destination.send("\n".join(errors))
 
         if not tourney_results and not errors:
-            if force_week is not None:
-                await ctx.send(f"📅 No matches found for **{player}** in week **{force_week}**.")
-            else:
-                await ctx.send(f"📅 No matches found for **{player}** in any tournament.")
+            await destination.send(f"📅 No matches found for **{player}** in any tournament.")
             return
 
-        if force_text and is_dm:
-            await self._send_matches_text(ctx, player, tourney_results)
+        if force_text:
+            await self._send_matches_text(destination, player, tourney_results)
         else:
-            # Siempre intentar imagen, incluso en DMs (a menos que se haya forzado texto)
+            # Siempre intentar imagen (a menos que se haya forzado texto)
             try:
                 img_bytes = render_player_matches(player, tourney_results)
                 filename = f"matches_{player.lower().replace(' ', '_')}.png"
-                await ctx.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
+                await destination.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
             except Exception as e:
-                logger.exception(f"matches_command image render failed: {e}")
-                await self._send_matches_text(ctx, player, tourney_results)
+                logger.exception(f"_build_and_send_player_matches image render failed: {e}")
+                await self._send_matches_text(destination, player, tourney_results)
+
+    # ── Public commands ────────────────────────────────────────────────────────
+
+    @commands.command(name='ping')
+    async def ping(self, ctx):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        await ctx.send("Pong!")
+
+    @commands.command(name='tournaments')
+    async def list_tournaments(self, ctx):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        await self._ensure_dm_or_admin(ctx) 
+        embed = discord.Embed(title="🏆 Available Tournaments", color=discord.Color.gold())
+        for t in self._tourneys_for_ctx(context):
+            embed.add_field(name=t['name'], value=f"Alias: `{t.get('alias', 'No alias')}`", inline=False)
+        await ctx.send(embed=embed)
+
+    @commands.command(name='matches', aliases=['m'])
+    async def matches_command(self, ctx, player: str = None, *args):
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        await self._ensure_dm_or_admin(ctx)
+
+        if not player:
+            await ctx.send("❌ Please specify a player name. Example: `!m Scorium`")
+            return
+
+        # Solo permitir el flag 'text' (y solo en DMs)
+        force_text = False
+        is_dm = ctx.guild is None
+        for arg in args:
+            if arg.lower() == "text":
+                if is_dm:
+                    force_text = True
+                else:
+                    await ctx.send("ℹ️ The `text` flag only works in direct messages (DMs). Ignored.")
+            else:
+                # Cualquier otro argumento se ignora y se notifica
+                await ctx.send(f"ℹ️ The `!m` command no longer accepts a week number. The week is determined automatically. Ignoring `{arg}`.")
+
+        await ctx.send(f"🔍 Searching for **{player}**...")
+
+        guild_id = ctx.guild.id if ctx.guild else None
+        await self._build_and_send_player_matches(ctx, player, force_text and is_dm, guild_id, context)
+
+    @require_dm()
+    @commands.command(name='subscribe', aliases=['sub'])
+    async def subscribe_command(self, ctx, player: str = None, *args):
+        """DM-only. Subscribe to a player: get DM'd their matches whenever
+        notify_subscribed_players fires, as if you'd run !m <player>."""
+        if not player:
+            await ctx.send("❌ Please specify a player name. Example: `!sub Scorium`")
+            return
+
+        force_text = False
+        for arg in args:
+            if arg.lower() == "text":
+                force_text = True
+            else:
+                await ctx.send(f"ℹ️ Ignoring unknown option `{arg}`.")
+
+        from scheduler import add_subscription, list_subscriptions, list_tasks_by_action, describe_schedule_gmt
+
+        # Only one active subscription per user — check before anything else
+        # so we don't bother hitting the mapping sheet if they're already subscribed.
+        existing = list_subscriptions(ctx.author.id)
+        if existing:
+            await ctx.send(
+                f"❌ You're already subscribed to **{existing[0]['player']}**. "
+                f"Use `!unsub` first, then `!sub {player}` again to switch."
+            )
+            return
+
+        # Validate the player against the mapping sheet — the same roster
+        # used to register players for tournaments/DMs.
+        try:
+            mapping = await load_player_mapping_async(self.mapping_sheet_url)
+        except Exception as e:
+            logger.error(f"subscribe_command: failed to load player mapping: {e}", exc_info=True)
+            await ctx.send("❌ Couldn't load the player list right now. Please try again in a moment.")
+            return
+        player_key = normalize_name(player)
+        canonical = next((p for p in mapping if normalize_name(p) == player_key), None)
+
+        if canonical is None:
+            await ctx.send(
+                f"❌ I couldn't find a player named **{player}**. "
+                "Please make sure you typed the name exactly as it's registered in the tournaments."
+            )
+            return
+
+        add_subscription(ctx.author.id, canonical, force_text)
+
+        tasks = list_tasks_by_action("notify_subscribed_players")
+        if tasks:
+            schedule_note = ", ".join(describe_schedule_gmt(t) for t in tasks)
+        else:
+            schedule_note = "no notification schedule is set up yet — check back once an admin creates one"
+
+        format_note = "as plain text" if force_text else "as an image (falling back to text if that fails)"
+        await ctx.send(
+            f"✅ Subscribed to **{canonical}**. You'll be notified {schedule_note}, {format_note}. "
+            f"Use `!unsub` to remove all your subscriptions."
+        )
+
+    @require_dm()
+    @commands.command(name='unsubscribe', aliases=['unsub'])
+    async def unsubscribe_command(self, ctx):
+        """DM-only. Remove every player subscription for the calling user."""
+        from scheduler import remove_all_subscriptions
+        count = remove_all_subscriptions(ctx.author.id)
+        if count:
+            await ctx.send(f"🗑️ Removed {count} subscription(s).")
+        else:
+            await ctx.send("📭 You have no active subscriptions.")
 
     @commands.command(name='division', aliases=['d'])
     async def division_command(self, ctx, *args):

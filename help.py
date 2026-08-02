@@ -26,7 +26,9 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!matches` / `!m <player> [text]` — Player's matches as image (add `text` for plain text in DMs).\n"
                 "`!division` / `!d [division] [week] [text]` — Division matchups as image (add `text` in DMs for plain text).\n"
                 "`!standings` / `!c [tournament] [division] [text]` — Division standings as image (add `text` in DMs for plain text).\n"
-                "`!tournaments` — List available tournaments and their aliases."
+                "`!tournaments` — List available tournaments and their aliases.\n"
+                "`!subscribe` / `!sub <player> [text]` — DM-only. Get DM'd that player's matches automatically.\n"
+                "`!unsubscribe` / `!unsub` — DM-only. Remove all your subscriptions."
             ),
             inline=False
         )
@@ -81,7 +83,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
     # ── Detailed command help ────────────────────────────────────────────────
     cmd = command_name.lstrip('!').lower()
     # Alias normalisation
-    cmd = {'m': 'matches', 'c': 'standings', 'd': 'division'}.get(cmd, cmd)
+    cmd = {'m': 'matches', 'c': 'standings', 'd': 'division',
+           'sub': 'subscribe', 'unsub': 'unsubscribe'}.get(cmd, cmd)
 
     help_texts = {
         'matches': (
@@ -119,6 +122,27 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "List all configured tournaments and their short aliases.",
             f"`{bot_mention} !tournaments`",
             "", ""
+        ),
+        'subscribe': (
+            "!subscribe / !sub",
+            "DM-only. Subscribe to a player — you'll be DM'd their matches automatically "
+            "whenever an admin's notify_subscribed_players task fires, exactly as if you'd run !m <player>.",
+            f"`{bot_mention} !sub <player> [text]`",
+            (
+                f"`{bot_mention} !sub Scorium`\n"
+                f"`{bot_mention} !sub Scorium text`  — always DM as plain text instead of an image"
+            ),
+            "Only works in DMs, for any user. The player name is checked against the mapping sheet — if it's not "
+            "found you'll be told to check the spelling used when they registered; if it's found, the confirmation "
+            "shows exactly when you'll be notified (converted to GMT). **One active subscription per user** — if "
+            "you're already subscribed to someone, you'll be told to `!unsub` first, then `!sub` again to switch."
+        ),
+        'unsubscribe': (
+            "!unsubscribe / !unsub",
+            "DM-only. Remove every player subscription for you.",
+            f"`{bot_mention} !unsub`",
+            "",
+            "Only works in DMs, for any user. Removes ALL of your subscriptions at once — there's no per-player unsubscribe."
         ),
         'sendto': (
             "!sendto",
@@ -182,7 +206,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         ),
         'schedule': (
             "!schedule",
-            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported).",
+            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported, notify_subscribed_players).",
             (
                 f"`{bot_mention} !schedule add <action> <when> [options]`\n"
                 f"`{bot_mention} !schedule list`\n"
@@ -203,7 +227,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "Requires admin.\n"
                 "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
                 "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
-                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`\n"
+                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`\n"
+                "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's matches.\n"
                 "`standings` does not use `week` — it always posts current standings.\n"
                 "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
                 "`add`, `list`, `remove` and `info` only work inside a server; use `listall` to check tasks from a DM."
