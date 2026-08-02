@@ -39,7 +39,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!notify_all [week]` — DM all players with pending matches.\n"
                 "`!post_divisions [week] [tournament]` — Post matchups to all division threads.\n"
                 "`!post_standings [tournament]` — Post standings to all division threads.\n"
-                "`!refresh` — Reload all cached Google Sheets data."
+                "`!refresh` — Reload all cached Google Sheets data.\n"
+                "`!show_sub` — DM-only. List every active !subscribe subscription."
             ),
             inline=False
         )
@@ -132,10 +133,12 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 f"`{bot_mention} !sub Scorium`\n"
                 f"`{bot_mention} !sub Scorium text`  — always DM as plain text instead of an image"
             ),
-            "Only works in DMs, for any user. The player name is checked against the mapping sheet — if it's not "
-            "found you'll be told to check the spelling used when they registered; if it's found, the confirmation "
-            "shows exactly when you'll be notified (converted to GMT). **One active subscription per user** — if "
-            "you're already subscribed to someone, you'll be told to `!unsub` first, then `!sub` again to switch."
+            "Only works in DMs, for any user. The player name is checked against each tournament's hero-builds "
+            "roster (not the !sendto mapping sheet, which only covers players who've linked a Discord ID) — if "
+            "it's not found you'll be told to check the spelling used when they registered; if it's found, the "
+            "confirmation shows exactly when you'll be notified (converted to GMT). **One active subscription per "
+            "user** — if you're already subscribed to someone, you'll be told to `!unsub` first, then `!sub` again "
+            "to switch."
         ),
         'unsubscribe': (
             "!unsubscribe / !unsub",
@@ -143,6 +146,13 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             f"`{bot_mention} !unsub`",
             "",
             "Only works in DMs, for any user. Removes ALL of your subscriptions at once — there's no per-player unsubscribe."
+        ),
+        'show_sub': (
+            "!show_sub",
+            "List every active !subscribe subscription: who's subscribed to whom.",
+            f"`{bot_mention} !show_sub`",
+            "",
+            "Requires admin, and only works in DMs. One comma-separated line per message, `Username → Player`."
         ),
         'sendto': (
             "!sendto",

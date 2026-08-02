@@ -175,82 +175,122 @@ async def test_unsubscribe_requires_dm(cog):
         await _run_checks(TournamentCommands.unsubscribe_command, ctx)
 
 
+# Simulates a hero-builds roster with several *distinct* registered players —
+# not just Scorium. Regression coverage for the 2026-08-02 bug: !sub validated
+# against the !sendto Discord-ID mapping sheet (only 3 people had linked an
+# ID) instead of the actual tournament roster, so real players like "samwise"
+# and "tuff" (73 real entries in the live builds sheet) were wrongly rejected.
+# Keys are normalize_name("Player - Hero"), matching what
+# load_hero_builds_from_sheets really returns.
+FAKE_BUILDS = {
+    "scorium-saltamontes": "Human Wizard",
+    "samwise-mordek": "Elf Fighter",
+    "tuff-hugemistake": "Orc Barbarian",
+    "supertalls-samwise ard": "Dwarf Cleric",  # hero name contains another player's name — must not false-match
+}
+
+
 @pytest.mark.asyncio
-async def test_subscribe_command_calls_add_subscription(cog):
+@pytest.mark.parametrize("typed", ["Scorium", "samwise", "Samwise", "TUFF"])
+async def test_subscribe_command_accepts_any_registered_player(cog, typed):
     ctx = make_dm_ctx(user_id=555)
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", return_value={"Scorium": 999}), \
+         patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
          patch("scheduler.list_tasks_by_action", return_value=[]), \
          patch("scheduler.add_subscription") as mock_add:
-        await TournamentCommands.subscribe_command.callback(cog, ctx, "Scorium")
-    mock_add.assert_called_once_with(555, "Scorium", False)
-    assert "Subscribed to **Scorium**" in ctx.send.call_args[0][0]
+        await TournamentCommands.subscribe_command.callback(cog, ctx, typed)
+    mock_add.assert_called_once_with(555, typed, False)
+    assert f"Subscribed to **{typed}**" in ctx.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
 async def test_subscribe_command_with_text_flag(cog):
     ctx = make_dm_ctx(user_id=555)
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", return_value={"Scorium": 999}), \
+         patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
          patch("scheduler.list_tasks_by_action", return_value=[]), \
          patch("scheduler.add_subscription") as mock_add:
-        await TournamentCommands.subscribe_command.callback(cog, ctx, "Scorium", "text")
-    mock_add.assert_called_once_with(555, "Scorium", True)
+        await TournamentCommands.subscribe_command.callback(cog, ctx, "tuff", "text")
+    mock_add.assert_called_once_with(555, "tuff", True)
     assert "as plain text" in ctx.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
-async def test_subscribe_command_matches_case_insensitively_and_stores_canonical_spelling(cog):
-    """The stored/displayed name should be the mapping's spelling, not whatever case the user typed."""
+async def test_subscribe_command_never_matches_a_hero_name_substring(cog):
+    """'ard' is a substring of the hero 'Samwise Ard' but must not match on that basis."""
     ctx = make_dm_ctx(user_id=555)
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", return_value={"Scorium": 999}), \
-         patch("scheduler.list_tasks_by_action", return_value=[]), \
+         patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
          patch("scheduler.add_subscription") as mock_add:
-        await TournamentCommands.subscribe_command.callback(cog, ctx, "SCORIUM")
-    mock_add.assert_called_once_with(555, "Scorium", False)
-    assert "Subscribed to **Scorium**" in ctx.send.call_args[0][0]
+        await TournamentCommands.subscribe_command.callback(cog, ctx, "ard")
+    mock_add.assert_not_called()
+    assert "couldn't find a player named **ard**" in ctx.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
 async def test_subscribe_command_rejects_when_already_subscribed(cog):
     """One active subscription per user — a second !sub is rejected without even
-    hitting the mapping sheet, and tells the user to !unsub first."""
+    checking the tournament roster, and tells the user to !unsub first."""
     ctx = make_dm_ctx(user_id=555)
     existing = [{"player": "OtherGuy", "text_flag": 0}]
     with patch("scheduler.list_subscriptions", return_value=existing), \
-         patch("commands.load_player_mapping_async") as mock_mapping, \
+         patch("commands.get_tournament_sheets_async") as mock_sheets, \
          patch("scheduler.add_subscription") as mock_add:
         await TournamentCommands.subscribe_command.callback(cog, ctx, "Scorium")
     mock_add.assert_not_called()
-    mock_mapping.assert_not_called()
+    mock_sheets.assert_not_called()
     msg = ctx.send.call_args[0][0]
     assert "already subscribed to **OtherGuy**" in msg
     assert "!unsub" in msg
 
 
 @pytest.mark.asyncio
-async def test_subscribe_command_unknown_player_is_rejected(cog):
+@pytest.mark.parametrize("typed", ["NotAPlayer", "samwize", "zzz-nonexistent"])
+async def test_subscribe_command_unknown_player_is_rejected(cog, typed):
     ctx = make_dm_ctx(user_id=555)
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", return_value={"Scorium": 999}), \
+         patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
          patch("scheduler.add_subscription") as mock_add:
-        await TournamentCommands.subscribe_command.callback(cog, ctx, "NotAPlayer")
+        await TournamentCommands.subscribe_command.callback(cog, ctx, typed)
     mock_add.assert_not_called()
     msg = ctx.send.call_args[0][0]
-    assert "couldn't find a player named **NotAPlayer**" in msg
+    assert f"couldn't find a player named **{typed}**" in msg
     assert "registered in the tournaments" in msg
 
 
 @pytest.mark.asyncio
-async def test_subscribe_command_handles_mapping_load_failure(cog):
+async def test_subscribe_command_handles_roster_load_failure_gracefully(cog):
+    """If every tournament's roster fails to load, tell the user to retry
+    rather than the misleading 'player not found' (which implies a typo)."""
     ctx = make_dm_ctx(user_id=555)
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", side_effect=RuntimeError("sheet unreachable")), \
+         patch("commands.get_tournament_sheets_async", side_effect=RuntimeError("sheet unreachable")), \
          patch("scheduler.add_subscription") as mock_add:
         await TournamentCommands.subscribe_command.callback(cog, ctx, "Scorium")
     mock_add.assert_not_called()
-    assert "Couldn't load the player list" in ctx.send.call_args[0][0]
+    assert "Couldn't load the tournament rosters" in ctx.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_command_keeps_checking_other_tournaments_if_one_fails(cog):
+    """One tournament's sheet failing to load shouldn't block finding the
+    player in a different tournament."""
+    ctx = make_dm_ctx(user_id=555)
+    cog.tournaments = [
+        {"name": "Echoes of Valor", "alias": "EoV", "url": "eov_url"},
+        {"name": "Meridian Ascension", "alias": "MA", "url": "ma_url"},
+    ]
+    with patch("scheduler.list_subscriptions", return_value=[]), \
+         patch("commands.get_tournament_sheets_async", side_effect=[RuntimeError("down"), {}]), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
+         patch("scheduler.list_tasks_by_action", return_value=[]), \
+         patch("scheduler.add_subscription") as mock_add:
+        await TournamentCommands.subscribe_command.callback(cog, ctx, "tuff")
+    mock_add.assert_called_once_with(555, "tuff", False)
 
 
 @pytest.mark.asyncio
@@ -258,7 +298,8 @@ async def test_subscribe_command_reports_configured_schedule_in_gmt(cog):
     ctx = make_dm_ctx(user_id=555)
     fake_task = {"id": 1}  # describe_schedule_gmt is mocked, so its shape doesn't matter here
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", return_value={"Scorium": 999}), \
+         patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
          patch("scheduler.list_tasks_by_action", return_value=[fake_task]), \
          patch("scheduler.describe_schedule_gmt", return_value="Monday at 08:00 GMT"), \
          patch("scheduler.add_subscription"):
@@ -270,7 +311,8 @@ async def test_subscribe_command_reports_configured_schedule_in_gmt(cog):
 async def test_subscribe_command_reports_no_schedule_configured(cog):
     ctx = make_dm_ctx(user_id=555)
     with patch("scheduler.list_subscriptions", return_value=[]), \
-         patch("commands.load_player_mapping_async", return_value={"Scorium": 999}), \
+         patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.load_hero_builds_from_sheets", return_value=FAKE_BUILDS), \
          patch("scheduler.list_tasks_by_action", return_value=[]), \
          patch("scheduler.add_subscription"):
         await TournamentCommands.subscribe_command.callback(cog, ctx, "Scorium")
@@ -301,6 +343,67 @@ async def test_unsubscribe_command_with_none_reports_empty(cog):
     with patch("scheduler.remove_all_subscriptions", return_value=0):
         await TournamentCommands.unsubscribe_command.callback(cog, ctx)
     assert "no active subscriptions" in ctx.send.call_args[0][0]
+
+
+# ── show_subscriptions_command (!show_sub) ──────────────────────────────────
+
+class FakeDiscordUser:
+    """Minimal stand-in for a fetched discord.User — just needs str()."""
+    def __init__(self, uid):
+        self.id = uid
+
+    def __str__(self):
+        return f"user{self.id}"
+
+
+@pytest.mark.asyncio
+async def test_show_sub_requires_dm(cog):
+    ctx = make_guild_ctx()
+    with pytest.raises(commands.CheckFailure, match="only works in DMs"):
+        await _run_checks(TournamentCommands.show_subscriptions_command, ctx)
+
+
+@pytest.mark.asyncio
+async def test_show_sub_requires_admin(cog):
+    ctx = make_dm_ctx(user_id=555)
+    ctx.bot.admin_user_ids = []  # explicitly not an admin
+    with pytest.raises(commands.CheckFailure, match="permission"):
+        await _run_checks(TournamentCommands.show_subscriptions_command, ctx)
+
+
+@pytest.mark.asyncio
+async def test_show_sub_with_no_subscriptions(cog):
+    ctx = make_dm_ctx(user_id=555)
+    with patch("scheduler.list_subscriptions", return_value=[]):
+        await TournamentCommands.show_subscriptions_command.callback(cog, ctx)
+    assert "No active subscriptions" in ctx.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_show_sub_lists_users_and_their_players_comma_separated(cog):
+    ctx = make_dm_ctx(user_id=555)
+    subs = [
+        {"user_id": 111, "player": "Scorium"},
+        {"user_id": 222, "player": "samwise"},
+    ]
+    cog.bot.fetch_user = AsyncMock(side_effect=lambda uid: FakeDiscordUser(uid))
+    with patch("scheduler.list_subscriptions", return_value=subs):
+        await TournamentCommands.show_subscriptions_command.callback(cog, ctx)
+    msg = ctx.send.call_args[0][0]
+    assert "2 active subscription(s)" in msg
+    assert "user111 → Scorium" in msg
+    assert "user222 → samwise" in msg
+    assert "," in msg
+
+
+@pytest.mark.asyncio
+async def test_show_sub_falls_back_to_raw_id_if_fetch_user_fails(cog):
+    ctx = make_dm_ctx(user_id=555)
+    subs = [{"user_id": 999, "player": "Scorium"}]
+    cog.bot.fetch_user = AsyncMock(side_effect=RuntimeError("unknown user"))
+    with patch("scheduler.list_subscriptions", return_value=subs):
+        await TournamentCommands.show_subscriptions_command.callback(cog, ctx)
+    assert "999 → Scorium" in ctx.send.call_args[0][0]
 
 
 # ── SchedulerCog._dispatch("notify_subscribed_players") ────────────────────

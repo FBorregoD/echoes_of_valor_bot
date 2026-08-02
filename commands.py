@@ -437,25 +437,49 @@ class TournamentCommands(commands.Cog):
             )
             return
 
-        # Validate the player against the mapping sheet — the same roster
-        # used to register players for tournaments/DMs.
-        try:
-            mapping = await load_player_mapping_async(self.mapping_sheet_url)
-        except Exception as e:
-            logger.error(f"subscribe_command: failed to load player mapping: {e}", exc_info=True)
-            await ctx.send("❌ Couldn't load the player list right now. Please try again in a moment.")
-            return
+        # Validate the player against each tournament's hero-builds roster —
+        # NOT the !sendto/!notify_all mapping sheet, which only lists players
+        # who've linked a Discord ID (a small subset). !sub already has the
+        # Discord ID directly from ctx.author.id, so that mapping is
+        # irrelevant here; the roster that actually matters is "is this
+        # player registered in a tournament at all", which the builds sheet
+        # answers regardless of whether they've linked Discord.
         player_key = normalize_name(player)
-        canonical = next((p for p in mapping if normalize_name(p) == player_key), None)
+        prefix = player_key + "-"
+        found = False
+        any_roster_loaded = False
+        for tourney in self.tournaments:
+            try:
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
+                builds = load_hero_builds_from_sheets(
+                    sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+                )
+            except Exception as e:
+                logger.warning(f"subscribe_command: couldn't load roster for {tourney['name']}: {e}")
+                continue
+            any_roster_loaded = True
+            # builds keys are normalize_name("Player - Hero"), e.g. "samwise-mordek" —
+            # match the player portion by prefix so it doesn't also match a hero
+            # name that happens to contain the search term (e.g. searching "ard"
+            # shouldn't match a hero called "Standard").
+            if any(key == player_key or key.startswith(prefix) for key in builds):
+                found = True
+                break
 
-        if canonical is None:
+        if not found and not any_roster_loaded:
+            await ctx.send("❌ Couldn't load the tournament rosters right now. Please try again in a moment.")
+            return
+
+        if not found:
             await ctx.send(
                 f"❌ I couldn't find a player named **{player}**. "
                 "Please make sure you typed the name exactly as it's registered in the tournaments."
             )
             return
 
-        add_subscription(ctx.author.id, canonical, force_text)
+        # The builds dict only stores normalized keys, so the original
+        # spelling isn't recoverable from it — store what the user typed.
+        add_subscription(ctx.author.id, player, force_text)
 
         tasks = list_tasks_by_action("notify_subscribed_players")
         if tasks:
@@ -465,7 +489,7 @@ class TournamentCommands(commands.Cog):
 
         format_note = "as plain text" if force_text else "as an image (falling back to text if that fails)"
         await ctx.send(
-            f"✅ Subscribed to **{canonical}**. You'll be notified {schedule_note}, {format_note}. "
+            f"✅ Subscribed to **{player}**. You'll be notified {schedule_note}, {format_note}. "
             f"Use `!unsub` to remove all your subscriptions."
         )
 
@@ -479,6 +503,31 @@ class TournamentCommands(commands.Cog):
             await ctx.send(f"🗑️ Removed {count} subscription(s).")
         else:
             await ctx.send("📭 You have no active subscriptions.")
+
+    @is_bot_admin()
+    @require_dm()
+    @commands.command(name='show_sub')
+    async def show_subscriptions_command(self, ctx):
+        """Admin-only, DM-only. List every active subscription: who's subscribed to whom."""
+        from scheduler import list_subscriptions
+        subs = list_subscriptions()
+        if not subs:
+            await ctx.send("📭 No active subscriptions.")
+            return
+
+        entries = []
+        for row in subs:
+            try:
+                user = await self.bot.fetch_user(row["user_id"])
+                who = str(user)
+            except Exception as e:
+                logger.warning(f"show_sub: couldn't fetch user {row['user_id']}: {e}")
+                who = str(row["user_id"])
+            entries.append(f"{who} → {row['player']}")
+
+        text = f"📋 **{len(entries)} active subscription(s):**\n" + ", ".join(entries)
+        for chunk in split_message(text):
+            await ctx.send(chunk)
 
     @commands.command(name='division', aliases=['d'])
     async def division_command(self, ctx, *args):

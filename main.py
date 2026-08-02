@@ -21,9 +21,13 @@ logging.getLogger("discord.client").setLevel(logging.INFO)
 logging.getLogger("discord.http").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load configuration
-with open('config.json', 'r') as f:
+# Load configuration — CONFIG_FILE lets local/test runs point at a
+# different file (e.g. config.test.json) without touching production,
+# which keeps using config.json by default (no Railway changes needed).
+CONFIG_FILE = os.environ.get("CONFIG_FILE", "config.json")
+with open(CONFIG_FILE, 'r') as f:
     config = json.load(f)
+logger.info(f"Loaded config from {CONFIG_FILE}")
 
 TOURNAMENTS = config['tournaments']
 MAPPING_SHEET_URL = config['mapping_sheet_url']
