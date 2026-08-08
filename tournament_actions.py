@@ -21,7 +21,6 @@ from match_utils import (
     send_dm_to_player,
     split_message,
     normalize_name,
-    week_has_matches,
     is_division_sheet,
     player_matches,
     format_table_messages,
@@ -373,16 +372,19 @@ async def advance_auto_week(
     *,
     task_id: int,
     current_week: int,
-    sheets_by_tourney: dict,
     destination: discord.abc.Messageable,
     action_name: str,
     end_week: int | None = None,
 ):
     """
     After a successful scheduled run, advance current_week by 1.
-    Stops (marks exhausted) if:
-      - end_week is set and next_week > end_week, OR
-      - no matches exist for the next week in any tournament.
+    Stops (marks exhausted) only if end_week is set and next_week > end_week.
+
+    Running out of matches is detected separately, the *next* time this task
+    fires (see SchedulerCog._dispatch's season-over check) rather than by
+    peeking ahead here — that way the week that was just posted still counts
+    as "current" (for !m, etc.) for the rest of its run, instead of flipping
+    to "season over" the instant it's announced.
     """
     from scheduler import update_current_week
 
@@ -399,22 +401,8 @@ async def advance_auto_week(
         logger.info(f"Task {task_id}: end_week {end_week} reached — marked as exhausted.")
         return
 
-    has_next = any(
-        week_has_matches(sheets, next_week)
-        for sheets in sheets_by_tourney.values()
-    )
-
-    if has_next:
-        update_current_week(task_id, next_week)
-        logger.info(f"Task {task_id}: advanced to week {next_week}.")
-    else:
-        update_current_week(task_id, -1)
-        await destination.send(
-            f"🏁 **Season complete!** No matches found for week {next_week}. "
-            f"Scheduled task `{action_name}` (ID {task_id}) will no longer run automatically. "
-            f"Use `!schedule remove {task_id}` to clean it up if needed."
-        )
-        logger.info(f"Task {task_id}: no week {next_week} — marked as exhausted.")
+    update_current_week(task_id, next_week)
+    logger.info(f"Task {task_id}: advanced to week {next_week}.")
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

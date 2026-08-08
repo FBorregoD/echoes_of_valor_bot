@@ -9,6 +9,11 @@ The loop fires tasks when their schedule matches:
 Auto-advancing week: if current_week is set (not NULL), it overrides
 params["week"] and increments by 1 after each successful run.
 current_week = -1 means the season is over and the task is skipped.
+Season-end is detected at the START of a fire (see _season_over): if
+current_week itself has no matches, that fire marks the task exhausted
+instead of posting. This is deliberately NOT done by peeking at next_week
+right after posting current_week, so the week that was just posted keeps
+counting as "current" (e.g. for !m) until the following fire finds nothing.
 
 Now also validates that the destination channel is allowed according to
 the bot's channel_index (the same restriction as for manual commands).
@@ -30,8 +35,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
 from discord.ext import commands, tasks
 
-from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported
-from match_utils import normalize_name
+from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported, find_tournament
+from match_utils import normalize_name, week_has_matches
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +345,39 @@ async def _fetch_sheets_by_tourney(tournaments: list[dict]) -> dict:
     return sheets_by_tourney
 
 
+async def _season_over(tournaments: list[dict], task_id: int, auto_week: int,
+                        destination, action: str) -> bool:
+    """
+    For auto-advancing tasks, check whether `auto_week` itself (the week
+    this fire is about to post/notify for) has any matches at all. If not,
+    this is the fire *after* the last real week — mark the task exhausted
+    and notify, instead of posting an empty result. Returns True if the
+    season was found over (caller should skip the action).
+
+    `tournaments` should be scoped to whatever the task actually covers
+    (e.g. just its own tournament for post_divisions) — passing every
+    configured tournament here means a shorter tournament's task won't be
+    declared over until *every* tournament in the list runs out of matches
+    for that week number, which is wrong when tournaments have different
+    season lengths.
+    """
+    sheets_by_tourney = await _fetch_sheets_by_tourney(tournaments)
+    has_matches = any(
+        week_has_matches(sheets, auto_week) for sheets in sheets_by_tourney.values()
+    )
+    if has_matches:
+        return False
+
+    update_current_week(task_id, -1)
+    await destination.send(
+        f"🏁 **Season complete!** No matches found for week {auto_week}. "
+        f"Scheduled task `{action}` (ID {task_id}) will no longer run automatically. "
+        f"Use `!schedule remove {task_id}` to clean it up if needed."
+    )
+    logger.info(f"Task {task_id}: no week {auto_week} — marked as exhausted.")
+    return True
+
+
 # ── Scheduler Cog ──────────────────────────────────────────────────────────────
 
 class SchedulerCog(commands.Cog):
@@ -443,6 +481,12 @@ class SchedulerCog(commands.Cog):
         cog = self.cog_ref
 
         if action == "post_divisions":
+            if auto_week is not None:
+                tourney = find_tournament(cog.tournaments, params.get("tournament", "MA"))
+                season_tournaments = [tourney] if tourney else cog.tournaments
+                if await _season_over(season_tournaments, task_id, auto_week, destination, action):
+                    return
+
             success, not_found, errors = await run_post_divisions(
                 destination=destination,
                 tournaments=cog.tournaments,
@@ -459,15 +503,20 @@ class SchedulerCog(commands.Cog):
             await destination.send(result)
 
             if auto_week is not None:
-                sheets_by_tourney = await _fetch_sheets_by_tourney(cog.tournaments)
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
-                    sheets_by_tourney=sheets_by_tourney,
                     destination=destination, action_name=action,
                     end_week=end_week,
                 )
 
         elif action == "notify_all":
+            # notify_all has no single "tournament" param — it DMs pending
+            # matches across every configured tournament (see run_notify_all),
+            # so season-over here is intentionally checked across all of them
+            # too, unlike post_divisions above which is scoped to its own task.
+            if auto_week is not None and await _season_over(cog.tournaments, task_id, auto_week, destination, action):
+                return
+
             success, total = await run_notify_all(
                 bot=self.bot,
                 destination=destination,
@@ -480,10 +529,8 @@ class SchedulerCog(commands.Cog):
             await destination.send(f"✅ DMs sent to {success}/{total} players.")
 
             if auto_week is not None:
-                sheets_by_tourney = await _fetch_sheets_by_tourney(cog.tournaments)
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
-                    sheets_by_tourney=sheets_by_tourney,
                     destination=destination, action_name=action,
                     end_week=end_week,
                 )
