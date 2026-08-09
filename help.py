@@ -28,7 +28,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!standings` / `!c [tournament] [division] [text]` — Division standings as image (add `text` in DMs for plain text).\n"
                 "`!tournaments` — List available tournaments and their aliases.\n"
                 "`!subscribe` / `!sub <player> [text]` — DM-only. Get DM'd that player's matches automatically.\n"
-                "`!unsubscribe` / `!unsub` — DM-only. Remove all your subscriptions."
+                "`!unsubscribe` / `!unsub` — DM-only. Remove all your subscriptions.\n"
+                "`!summary` / `!sum <player>` — DM-only. Show a player's characters and win/loss record per tournament."
             ),
             inline=False
         )
@@ -85,7 +86,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
     cmd = command_name.lstrip('!').lower()
     # Alias normalisation
     cmd = {'m': 'matches', 'c': 'standings', 'd': 'division',
-           'sub': 'subscribe', 'unsub': 'unsubscribe'}.get(cmd, cmd)
+           'sub': 'subscribe', 'unsub': 'unsubscribe', 'sum': 'summary'}.get(cmd, cmd)
 
     help_texts = {
         'matches': (
@@ -126,8 +127,9 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         ),
         'subscribe': (
             "!subscribe / !sub",
-            "DM-only. Subscribe to a player — you'll be DM'd their matches automatically "
-            "whenever an admin's notify_subscribed_players task fires, exactly as if you'd run !m <player>.",
+            "DM-only. Subscribe to a player — you'll be DM'd their matches (as if you'd run !m <player>), "
+            "followed by a !summary of the same player, automatically whenever an admin's "
+            "notify_subscribed_players task fires.",
             f"`{bot_mention} !sub <player> [text]`",
             (
                 f"`{bot_mention} !sub Scorium`\n"
@@ -146,6 +148,16 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             f"`{bot_mention} !unsub`",
             "",
             "Only works in DMs, for any user. Removes ALL of your subscriptions at once — there's no per-player unsubscribe."
+        ),
+        'summary': (
+            "!summary / !sum",
+            "DM-only. Show a player's characters and win/loss record, per tournament.",
+            f"`{bot_mention} !sum <player>`",
+            f"`{bot_mention} !sum Scorium`",
+            "Only works in DMs, for any user. For each tournament the player is registered in: one line per "
+            "character (ancestry/class, division, ranking position, matches played/won/win%), followed by a "
+            "totals line across all of that player's characters in that tournament. Only verified (`check == "
+            "\"OK\"`) matches count toward played/won — pending and misreported matches don't. Text-only for now."
         ),
         'show_sub': (
             "!show_sub",
@@ -238,7 +250,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
                 "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
                 "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`\n"
-                "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's matches.\n"
+                "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's "
+                "matches followed by a !summary of that player.\n"
                 "`standings` does not use `week` — it always posts current standings.\n"
                 "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
                 "`add`, `list`, `remove` and `info` only work inside a server; use `listall` to check tasks from a DM."

@@ -20,6 +20,9 @@ from match_utils import (
     format_table_messages,
     get_latest_week,
     get_latest_week_from_sheets,
+    get_player_characters,
+    find_player_division_rank,
+    get_player_division_record,
 )
 from tournament_actions import (
     find_tournament,
@@ -360,6 +363,62 @@ class TournamentCommands(commands.Cog):
                 logger.exception(f"_build_and_send_player_matches image render failed: {e}")
                 await self._send_matches_text(destination, player, tourney_results)
 
+    async def _build_and_send_player_summary(self, destination, player: str, context: dict):
+        """
+        Build and send a per-tournament stats summary for `player`: every
+        registered character (hero) with class/race, division, ranking
+        position, and their played/won/win% record (only check=='OK'
+        matches count), followed by a per-tournament total across all of
+        that player's characters. Text-only for now. Shared by
+        summary_command and notify_subscribed_players, which appends this
+        after the matches DM (pass {'tournament': None} for a DM-equivalent,
+        all-tournaments lookup, same convention as _build_and_send_player_matches).
+        """
+        tourneys = self._tourneys_for_ctx(context)
+        sections = []
+
+        for tourney in tourneys:
+            try:
+                sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
+            except Exception as e:
+                logger.error(f"_build_and_send_player_summary ({tourney['name']}): {e}", exc_info=True)
+                continue
+
+            characters = get_player_characters(
+                sheets, player, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+            )
+            if not characters:
+                continue
+
+            lines = [f"**🏆 {tourney['name']}**"]
+            total_played = 0
+            total_won = 0
+            for char in characters:
+                division, rank = find_player_division_rank(sheets, char['hero_key'])
+                played, won = get_player_division_record(sheets, division, char['hero_key']) if division else (0, 0)
+                total_played += played
+                total_won += won
+
+                build = f"{char['ancestry']} {char['class']}".strip() or "—"
+                div_str = division or "unranked"
+                rank_str = f"#{rank}" if rank else "—"
+                win_pct = f"{round(won / played * 100)}%" if played else "—"
+                lines.append(
+                    f"**{char['display_name']}** ({build}) — {div_str}, rank {rank_str} — "
+                    f"{played} played, {won} won ({win_pct})"
+                )
+
+            total_pct = f"{round(total_won / total_played * 100)}%" if total_played else "—"
+            lines.append(f"**Total:** {total_played} played, {total_won} won ({total_pct})")
+            sections.append("\n".join(lines))
+
+        if not sections:
+            await destination.send(f"📅 No characters found for **{player}** in any tournament.")
+            return
+
+        for chunk in split_message("\n\n".join(sections)):
+            await destination.send(chunk)
+
     # ── Public commands ────────────────────────────────────────────────────────
 
     @commands.command(name='ping')
@@ -503,6 +562,19 @@ class TournamentCommands(commands.Cog):
             await ctx.send(f"🗑️ Removed {count} subscription(s).")
         else:
             await ctx.send("📭 You have no active subscriptions.")
+
+    @require_dm()
+    @commands.command(name='summary', aliases=['sum'])
+    async def summary_command(self, ctx, player: str = None, *args):
+        """DM-only. Show a player's characters and win/loss record across every tournament."""
+        if not player:
+            await ctx.send("❌ Please specify a player name. Example: `!summary Scorium`")
+            return
+        for arg in args:
+            if arg.lower() != "text":
+                await ctx.send(f"ℹ️ Ignoring unknown option `{arg}`.")
+
+        await self._build_and_send_player_summary(ctx, player, context={'tournament': None})
 
     @is_bot_admin()
     @require_dm()

@@ -216,13 +216,13 @@ def find_hero_builds_sheet(sheets_dict: dict, preferred_name: str = None):
     return None
 
 
-def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, column_mapping: dict = None):
-    builds = {}
-    target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
-    if not target_sheet:
-        return builds
-    df = sheets_dict[target_sheet]
-
+def _resolve_builds_layout(df, column_mapping: dict = None) -> tuple[dict, int]:
+    """
+    Shared header-row/column detection for the hero-builds sheet. Returns
+    (col_indices, start_row). Split out of load_hero_builds_from_sheets so
+    get_player_characters() can reuse the exact same layout logic instead of
+    re-implementing it.
+    """
     header_row = 0
     start_row = 0
     if column_mapping and any(isinstance(v, str) for v in column_mapping.values()):
@@ -268,9 +268,13 @@ def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, colu
     else:
         col_indices = {'player_col': 3, 'ancestry_col': 4, 'class_col': 5}
 
-    if col_indices.get('player_col') is None:
-        return builds
+    return col_indices, start_row
 
+
+def _iter_builds_rows(df, col_indices: dict, start_row: int):
+    """Yield (player_hero_raw, ancestry, class_) for each populated row below start_row."""
+    if col_indices.get('player_col') is None:
+        return
     for idx in range(start_row, len(df)):
         row = df.iloc[idx]
         if col_indices['player_col'] >= len(row):
@@ -294,10 +298,55 @@ def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, colu
             if not pd.isna(cls_cell):
                 class_ = str(cls_cell).strip()
 
+        yield player_hero, ancestry, class_
+
+
+def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, column_mapping: dict = None):
+    builds = {}
+    target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
+    if not target_sheet:
+        return builds
+    df = sheets_dict[target_sheet]
+    col_indices, start_row = _resolve_builds_layout(df, column_mapping)
+
+    for player_hero, ancestry, class_ in _iter_builds_rows(df, col_indices, start_row):
         norm_key = normalize_name(player_hero)
         builds[norm_key] = f"{ancestry} {class_}".strip()
 
     return builds
+
+
+def get_player_characters(sheets_dict: dict, player_name: str,
+                           sheet_name: str = None, column_mapping: dict = None) -> list[dict]:
+    """
+    Every hero-builds-sheet row registered to `player_name`, matched by
+    normalized prefix — the same convention !subscribe uses to validate a
+    player against the roster. A player can have more than one row (e.g.
+    registered in more than one division), so this returns a list, in sheet
+    order: [{"hero_key": "samwise-mordek", "display_name": "Samwise - Mordek",
+    "ancestry": ..., "class": ...}, ...].
+    """
+    characters = []
+    target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
+    if not target_sheet:
+        return characters
+    df = sheets_dict[target_sheet]
+    col_indices, start_row = _resolve_builds_layout(df, column_mapping)
+
+    player_key = normalize_name(player_name)
+    prefix = player_key + "-"
+
+    for player_hero, ancestry, class_ in _iter_builds_rows(df, col_indices, start_row):
+        hero_key = normalize_name(player_hero)
+        if hero_key == player_key or hero_key.startswith(prefix):
+            characters.append({
+                "hero_key": hero_key,
+                "display_name": player_hero,
+                "ancestry": ancestry,
+                "class": class_,
+            })
+
+    return characters
 
 
 # ------------------------------------------------------------
@@ -856,6 +905,86 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
         ranked.append([str(i), hero, str(played_int), str(pts_int)])
 
     return ranked, ["#", "Player", "Played", "Pts"]
+
+
+def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | None, int | None]:
+    """
+    Search every division sheet's standings for `hero_key` (a normalized
+    "player-hero" string, e.g. from get_player_characters). Returns
+    (division_name, rank) for the first division whose standings list
+    contains it, or (None, None) if it isn't ranked in any division yet
+    (e.g. registered but with no scored matches so far).
+    """
+    for sheet_name, df in sheets_dict.items():
+        if not is_division_sheet(df):
+            continue
+        rows, _ = get_division_standings(sheets_dict, sheet_name)
+        if not rows:
+            continue
+        for rank_str, hero, _played, _pts in rows:
+            if normalize_name(hero) == hero_key:
+                return sheet_name, int(rank_str)
+    return None, None
+
+
+def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: str) -> tuple[int, int]:
+    """
+    Count (played, won) for `hero_key` (a normalized "player-hero" string)
+    across every week of `division_name`'s match schedule. Only verified
+    matches (check == "OK") count — pending and misreported rows don't,
+    matching how the rest of the bot distinguishes "finished" matches.
+    """
+    played = 0
+    won = 0
+    target_sheet = None
+    for sheet_name in sheets_dict.keys():
+        if sheet_name.lower() == division_name.lower():
+            target_sheet = sheet_name
+            break
+    if not target_sheet:
+        return played, won
+    df = sheets_dict[target_sheet]
+
+    start_row = None
+    for idx, row in df.iterrows():
+        if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().startswith("Week"):
+            start_row = idx
+            break
+    if start_row is None:
+        return played, won
+
+    for idx in range(start_row, len(df)):
+        row = df.iloc[idx]
+        player1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+        player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+        if not player1 and not player2:
+            continue
+        check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
+        if check != "OK":
+            continue
+
+        is_p1 = normalize_name(player1) == hero_key
+        is_p2 = normalize_name(player2) == hero_key
+        if not (is_p1 or is_p2):
+            continue
+
+        s1 = row.iloc[4] if len(row) > 4 else None
+        s2 = row.iloc[5] if len(row) > 5 else None
+        if pd.isna(s1) or pd.isna(s2):
+            continue
+        try:
+            score1 = float(s1)
+            score2 = float(s2)
+        except (ValueError, TypeError):
+            continue
+
+        played += 1
+        my_score, opp_score = (score1, score2) if is_p1 else (score2, score1)
+        if my_score > opp_score:
+            won += 1
+
+    return played, won
+
 
 # ------------------------------------------------------------
 # Auto-detect most recent week from tournament sheets

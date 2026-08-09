@@ -411,6 +411,7 @@ async def test_show_sub_falls_back_to_raw_id_if_fetch_user_fails(cog):
 def _make_fake_self():
     cog_ref = MagicMock()
     cog_ref._build_and_send_player_matches = AsyncMock()
+    cog_ref._build_and_send_player_summary = AsyncMock()
     fake_self = SimpleNamespace(cog_ref=cog_ref, bot=MagicMock())
     return fake_self, cog_ref
 
@@ -442,6 +443,12 @@ async def test_dispatch_notify_subscribed_players_sends_to_each_subscriber():
     destination.send.assert_awaited_once()
     assert "Notified 2 subscriber(s)" in destination.send.call_args[0][0]
 
+    # Each subscriber also gets a !summary appended after their matches.
+    assert cog_ref._build_and_send_player_summary.await_count == 2
+    summary_call_args = [c.args for c in cog_ref._build_and_send_player_summary.await_args_list]
+    assert summary_call_args[0][1] == "Scorium"
+    assert summary_call_args[1][1] == "OtherPlayer"
+
 
 @pytest.mark.asyncio
 async def test_dispatch_notify_subscribed_players_continues_after_one_failure():
@@ -468,6 +475,7 @@ async def test_dispatch_notify_subscribed_players_continues_after_one_failure():
         )
 
     assert cog_ref._build_and_send_player_matches.await_count == 1
+    assert cog_ref._build_and_send_player_summary.await_count == 1
     msg = destination.send.call_args[0][0]
     assert "Notified 1 subscriber(s)" in msg
     assert "1 failed" in msg
@@ -485,4 +493,29 @@ async def test_dispatch_notify_subscribed_players_with_no_subscribers():
         )
 
     cog_ref._build_and_send_player_matches.assert_not_awaited()
+    cog_ref._build_and_send_player_summary.assert_not_awaited()
     assert "Notified 0 subscriber(s)" in destination.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_notify_subscribed_players_sends_summary_after_matches():
+    """The !summary appended to a subscriber's DM must come after their
+    matches, not before or instead of them."""
+    fake_self, cog_ref = _make_fake_self()
+    fake_self.bot.fetch_user = AsyncMock(side_effect=lambda uid: MagicMock(id=uid))
+    destination = MagicMock()
+    destination.send = AsyncMock()
+
+    order = []
+    cog_ref._build_and_send_player_matches.side_effect = lambda *a, **k: order.append("matches")
+    cog_ref._build_and_send_player_summary.side_effect = lambda *a, **k: order.append("summary")
+
+    subs = [{"user_id": 111, "player": "Scorium", "text_flag": 0}]
+
+    with patch("scheduler.list_subscriptions", return_value=subs), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await SchedulerCog._dispatch(
+            fake_self, "notify_subscribed_players", destination, {}, task_id=1, auto_week=None,
+        )
+
+    assert order == ["matches", "summary"]

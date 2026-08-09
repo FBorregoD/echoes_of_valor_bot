@@ -571,6 +571,9 @@ class SchedulerCog(commands.Cog):
                         user, row["player"], bool(row["text_flag"]),
                         guild_id=None, context={'tournament': None},
                     )
+                    await cog._build_and_send_player_summary(
+                        user, row["player"], context={'tournament': None},
+                    )
                     sent += 1
                 except Exception as e:
                     failed += 1

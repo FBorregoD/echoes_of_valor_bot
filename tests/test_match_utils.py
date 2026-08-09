@@ -10,9 +10,16 @@ import threading
 import time
 from unittest.mock import patch
 
+import pandas as pd
+
 import match_utils
 from match_utils import normalize_name
 from match_utils import get_all_misreported_matches
+from match_utils import (
+    get_player_characters,
+    find_player_division_rank,
+    get_player_division_record,
+)
 
 
 def _match(week, player1, player2, division="Diamond", misreported=True):
@@ -177,4 +184,94 @@ def test_normalize_name_collapses_whitespace_and_lowercases():
 
 def test_normalize_name_empty_input():
     assert normalize_name("") == ""
+
+
+# ── !summary support: get_player_characters / find_player_division_rank /
+#    get_player_division_record ──────────────────────────────────────────────
+
+def _summary_sheets():
+    """
+    One division ('Diamond') with a standings block on top and a
+    SCHEDULE/match section below, plus a hero-builds sheet with two
+    characters for 'Samwise' (registered twice) and one for 'Carol'.
+    """
+    diamond = pd.DataFrame([
+        ['Rank', 'Hero', 'Played', 'Points', None, None, None],
+        ['1', 'Samwise - Mordek', '3', '6', None, None, None],
+        ['2', 'Carol - Rogue', '2', '3', None, None, None],
+        [None, None, None, None, None, None, None],
+        ['SCHEDULE', None, None, None, None, None, None],
+        ['Week 1', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, 'OK'],
+        ['Week 2', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', None, None, ''],
+        ['Week 3', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 0, 2, 'OK'],
+        ['Week 4', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 0, 'NO'],  # misreported, excluded
+    ], columns=['A', 'B', 'C', 'D', 'E', 'F', 'G'])
+
+    builds = pd.DataFrame([
+        ['Tier', 'X', 'Y', 'Player + Hero', 'Ancestry', 'Class'],
+        ['Diamond', '', '', 'Samwise - Mordek', 'Human', 'Warlock'],
+        ['Diamond', '', '', 'Samwise - Fizzle', 'Gnome', 'Tinkerer'],
+        ['Diamond', '', '', 'Carol - Rogue', 'Elf', 'Rogue'],
+    ], columns=['A', 'B', 'C', 'D', 'E', 'F'])
+
+    return {'Diamond': diamond, 'hero builds': builds}
+
+
+BUILDS_MAPPING = {'player_col': 3, 'ancestry_col': 4, 'class_col': 5}
+
+
+def test_get_player_characters_finds_all_of_a_players_heroes():
+    sheets = _summary_sheets()
+    chars = get_player_characters(sheets, "Samwise", "hero builds", BUILDS_MAPPING)
+    assert [c['display_name'] for c in chars] == ['Samwise - Mordek', 'Samwise - Fizzle']
+    assert chars[0]['ancestry'] == 'Human'
+    assert chars[0]['class'] == 'Warlock'
+    assert chars[0]['hero_key'] == 'samwise-mordek'
+
+
+def test_get_player_characters_does_not_match_other_players():
+    sheets = _summary_sheets()
+    chars = get_player_characters(sheets, "Carol", "hero builds", BUILDS_MAPPING)
+    assert len(chars) == 1
+    assert chars[0]['display_name'] == 'Carol - Rogue'
+
+
+def test_get_player_characters_no_match_returns_empty():
+    sheets = _summary_sheets()
+    assert get_player_characters(sheets, "Nobody", "hero builds", BUILDS_MAPPING) == []
+
+
+def test_find_player_division_rank_matches_standings():
+    sheets = _summary_sheets()
+    division, rank = find_player_division_rank(sheets, "samwise-mordek")
+    assert division == "Diamond"
+    assert rank == 1  # 6 points beats Carol's 3
+
+
+def test_find_player_division_rank_not_ranked_returns_none():
+    sheets = _summary_sheets()
+    division, rank = find_player_division_rank(sheets, "samwise-fizzle")
+    assert division is None
+    assert rank is None
+
+
+def test_get_player_division_record_counts_only_verified_matches():
+    """
+    Week 1: OK win, Week 2: unreported (excluded), Week 3: OK loss,
+    Week 4: misreported (check='NO', excluded) -> played=2, won=1.
+    """
+    sheets = _summary_sheets()
+    played, won = get_player_division_record(sheets, "Diamond", "samwise-mordek")
+    assert (played, won) == (2, 1)
+
+
+def test_get_player_division_record_opponent_perspective():
+    sheets = _summary_sheets()
+    played, won = get_player_division_record(sheets, "Diamond", "carol-rogue")
+    assert (played, won) == (2, 1)  # Carol lost week 1, won week 3
+
+
+def test_get_player_division_record_unknown_division_returns_zero():
+    sheets = _summary_sheets()
+    assert get_player_division_record(sheets, "Nonexistent", "samwise-mordek") == (0, 0)
     assert normalize_name(None) == ""
