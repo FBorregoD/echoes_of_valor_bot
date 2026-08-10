@@ -155,9 +155,12 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             f"`{bot_mention} !sum <player>`",
             f"`{bot_mention} !sum Scorium`",
             "Only works in DMs, for any user. For each tournament the player is registered in: one line per "
-            "character (ancestry/class, division, ranking position, matches played/won/win%), followed by a "
-            "totals line across all of that player's characters in that tournament. Only verified (`check == "
-            "\"OK\"`) matches count toward played/won — pending and misreported matches don't. Text-only for now."
+            "character — division first, then the character's own name (no player name, that's you), "
+            "ancestry/class, ranking position (e.g. \"3rd out of 8\"), and matches played/points/win% — "
+            "followed by a totals line across all of that player's characters in that tournament. Only "
+            "verified (`check == \"OK\"`) matches count toward played/points — pending and misreported matches "
+            "don't. Matches are best-of-two games (a 1-1 draw is possible), so points are a 0-2 sum per match, "
+            "not a binary win count — win% is points / (played × 2). Text-only for now."
         ),
         'show_sub': (
             "!show_sub",

@@ -52,6 +52,15 @@ def is_bot_admin():
     return commands.check(predicate)
 
 
+def _ordinal(n: int) -> str:
+    """1 -> '1st', 2 -> '2nd', 3 -> '3rd', 4 -> '4th', 11-13 -> '11th'/'12th'/'13th', ..."""
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def require_dm():
     """Command check: reject if used inside a server — this command only works in DMs, for any user."""
     async def predicate(ctx):
@@ -367,12 +376,16 @@ class TournamentCommands(commands.Cog):
         """
         Build and send a per-tournament stats summary for `player`: every
         registered character (hero) with class/race, division, ranking
-        position, and their played/won/win% record (only check=='OK'
+        position, and their played/points/win% record (only check=='OK'
         matches count), followed by a per-tournament total across all of
         that player's characters. Text-only for now. Shared by
         summary_command and notify_subscribed_players, which appends this
         after the matches DM (pass {'tournament': None} for a DM-equivalent,
         all-tournaments lookup, same convention as _build_and_send_player_matches).
+
+        Matches are best-of-two games, so each one awards the player between
+        0 and 2 points (their own score1/score2) rather than a binary
+        win/loss — a 1-1 draw is possible. Win% is points / (played * 2).
         """
         tourneys = self._tourneys_for_ctx(context)
         sections = []
@@ -392,24 +405,28 @@ class TournamentCommands(commands.Cog):
 
             lines = [f"**🏆 {tourney['name']}**"]
             total_played = 0
-            total_won = 0
+            total_points = 0
             for char in characters:
-                division, rank = find_player_division_rank(sheets, char['hero_key'])
-                played, won = get_player_division_record(sheets, division, char['hero_key']) if division else (0, 0)
+                division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
+                played, points = get_player_division_record(sheets, division, char['hero_key']) if division else (0, 0)
                 total_played += played
-                total_won += won
+                total_points += points
 
                 build = f"{char['ancestry']} {char['class']}".strip() or "—"
-                div_str = division or "unranked"
-                rank_str = f"#{rank}" if rank else "—"
-                win_pct = f"{round(won / played * 100)}%" if played else "—"
+                win_pct = f"{round(points / (played * 2) * 100)}%" if played else "—"
+                if division:
+                    rank_part = f" — {_ordinal(rank)} out of {total_ranked}"
+                    div_label = division
+                else:
+                    rank_part = ""
+                    div_label = "Unranked"
                 lines.append(
-                    f"**{char['display_name']}** ({build}) — {div_str}, rank {rank_str} — "
-                    f"{played} played, {won} won ({win_pct})"
+                    f"**{div_label}** — {char['hero_name']} ({build}){rank_part} — "
+                    f"{played} played, {points} points ({win_pct})"
                 )
 
-            total_pct = f"{round(total_won / total_played * 100)}%" if total_played else "—"
-            lines.append(f"**Total:** {total_played} played, {total_won} won ({total_pct})")
+            total_pct = f"{round(total_points / (total_played * 2) * 100)}%" if total_played else "—"
+            lines.append(f"**Total:** {total_played} played, {total_points} points ({total_pct})")
             sections.append("\n".join(lines))
 
         if not sections:

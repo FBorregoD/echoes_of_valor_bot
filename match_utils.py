@@ -178,6 +178,14 @@ def _player_name(full: str) -> str:
     return full.strip()
 
 
+def _hero_name(full: str) -> str:
+    """Extract 'HeroName' from 'PlayerName - HeroName' (split once, so a
+    hero name that itself contains ' - ' isn't cut short)."""
+    if ' - ' in full:
+        return full.split(' - ', 1)[1].strip()
+    return full.strip()
+
+
 def player_matches(search: str, full_name: str) -> bool:
     """
     True if `search` matches the player-name portion of `full_name`.
@@ -324,7 +332,7 @@ def get_player_characters(sheets_dict: dict, player_name: str,
     player against the roster. A player can have more than one row (e.g.
     registered in more than one division), so this returns a list, in sheet
     order: [{"hero_key": "samwise-mordek", "display_name": "Samwise - Mordek",
-    "ancestry": ..., "class": ...}, ...].
+    "hero_name": "Mordek", "ancestry": ..., "class": ...}, ...].
     """
     characters = []
     target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
@@ -342,6 +350,7 @@ def get_player_characters(sheets_dict: dict, player_name: str,
             characters.append({
                 "hero_key": hero_key,
                 "display_name": player_hero,
+                "hero_name": _hero_name(player_hero),
                 "ancestry": ancestry,
                 "class": class_,
             })
@@ -907,13 +916,15 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
     return ranked, ["#", "Player", "Played", "Pts"]
 
 
-def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | None, int | None]:
+def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | None, int | None, int | None]:
     """
     Search every division sheet's standings for `hero_key` (a normalized
     "player-hero" string, e.g. from get_player_characters). Returns
-    (division_name, rank) for the first division whose standings list
-    contains it, or (None, None) if it isn't ranked in any division yet
-    (e.g. registered but with no scored matches so far).
+    (division_name, rank, total_ranked) for the first division whose
+    standings list contains it — total_ranked is how many entries that
+    division's standings has, for display like "3rd out of 8" — or
+    (None, None, None) if it isn't ranked in any division yet (e.g.
+    registered but with no scored matches so far).
     """
     for sheet_name, df in sheets_dict.items():
         if not is_division_sheet(df):
@@ -923,26 +934,31 @@ def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | N
             continue
         for rank_str, hero, _played, _pts in rows:
             if normalize_name(hero) == hero_key:
-                return sheet_name, int(rank_str)
-    return None, None
+                return sheet_name, int(rank_str), len(rows)
+    return None, None, None
 
 
 def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: str) -> tuple[int, int]:
     """
-    Count (played, won) for `hero_key` (a normalized "player-hero" string)
+    Count (played, points) for `hero_key` (a normalized "player-hero" string)
     across every week of `division_name`'s match schedule. Only verified
     matches (check == "OK") count — pending and misreported rows don't,
     matching how the rest of the bot distinguishes "finished" matches.
+
+    Each match awards the player their own score1/score2 value (0, 1, or 2 —
+    matches are best-of-two games, so a 1-1 draw is possible, not just a
+    binary win/loss), so `points` is a sum, not a win count. Win% is
+    `points / (played * 2)`, since 2 is the max a player can earn per match.
     """
     played = 0
-    won = 0
+    points = 0
     target_sheet = None
     for sheet_name in sheets_dict.keys():
         if sheet_name.lower() == division_name.lower():
             target_sheet = sheet_name
             break
     if not target_sheet:
-        return played, won
+        return played, points
     df = sheets_dict[target_sheet]
 
     start_row = None
@@ -951,7 +967,7 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
             start_row = idx
             break
     if start_row is None:
-        return played, won
+        return played, points
 
     for idx in range(start_row, len(df)):
         row = df.iloc[idx]
@@ -979,11 +995,10 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
             continue
 
         played += 1
-        my_score, opp_score = (score1, score2) if is_p1 else (score2, score1)
-        if my_score > opp_score:
-            won += 1
+        my_score = score1 if is_p1 else score2
+        points += int(my_score)
 
-    return played, won
+    return played, points
 
 
 # ------------------------------------------------------------

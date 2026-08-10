@@ -184,6 +184,7 @@ def test_normalize_name_collapses_whitespace_and_lowercases():
 
 def test_normalize_name_empty_input():
     assert normalize_name("") == ""
+    assert normalize_name(None) == ""
 
 
 # ── !summary support: get_player_characters / find_player_division_rank /
@@ -203,8 +204,9 @@ def _summary_sheets():
         ['SCHEDULE', None, None, None, None, None, None],
         ['Week 1', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, 'OK'],
         ['Week 2', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', None, None, ''],
-        ['Week 3', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 0, 2, 'OK'],
+        ['Week 3', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, 'OK'],
         ['Week 4', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 0, 'NO'],  # misreported, excluded
+        ['Week 5', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 1, 'OK'],  # draw
     ], columns=['A', 'B', 'C', 'D', 'E', 'F', 'G'])
 
     builds = pd.DataFrame([
@@ -224,6 +226,7 @@ def test_get_player_characters_finds_all_of_a_players_heroes():
     sheets = _summary_sheets()
     chars = get_player_characters(sheets, "Samwise", "hero builds", BUILDS_MAPPING)
     assert [c['display_name'] for c in chars] == ['Samwise - Mordek', 'Samwise - Fizzle']
+    assert [c['hero_name'] for c in chars] == ['Mordek', 'Fizzle']
     assert chars[0]['ancestry'] == 'Human'
     assert chars[0]['class'] == 'Warlock'
     assert chars[0]['hero_key'] == 'samwise-mordek'
@@ -234,6 +237,7 @@ def test_get_player_characters_does_not_match_other_players():
     chars = get_player_characters(sheets, "Carol", "hero builds", BUILDS_MAPPING)
     assert len(chars) == 1
     assert chars[0]['display_name'] == 'Carol - Rogue'
+    assert chars[0]['hero_name'] == 'Rogue'
 
 
 def test_get_player_characters_no_match_returns_empty():
@@ -243,35 +247,39 @@ def test_get_player_characters_no_match_returns_empty():
 
 def test_find_player_division_rank_matches_standings():
     sheets = _summary_sheets()
-    division, rank = find_player_division_rank(sheets, "samwise-mordek")
+    division, rank, total = find_player_division_rank(sheets, "samwise-mordek")
     assert division == "Diamond"
     assert rank == 1  # 6 points beats Carol's 3
+    assert total == 2  # 2 entries in the Diamond standings
 
 
 def test_find_player_division_rank_not_ranked_returns_none():
     sheets = _summary_sheets()
-    division, rank = find_player_division_rank(sheets, "samwise-fizzle")
+    division, rank, total = find_player_division_rank(sheets, "samwise-fizzle")
     assert division is None
     assert rank is None
+    assert total is None
 
 
 def test_get_player_division_record_counts_only_verified_matches():
     """
-    Week 1: OK win, Week 2: unreported (excluded), Week 3: OK loss,
-    Week 4: misreported (check='NO', excluded) -> played=2, won=1.
+    Week 1: OK 2-0 win, Week 2: unreported (excluded), Week 3: OK 2-0 win,
+    Week 4: misreported (check='NO', excluded), Week 5: OK 1-1 draw ->
+    played=3, points=2+2+1=5. Points are a 0-2 sum per match, not a binary
+    win count (a draw earns 1 point, not 0).
     """
     sheets = _summary_sheets()
-    played, won = get_player_division_record(sheets, "Diamond", "samwise-mordek")
-    assert (played, won) == (2, 1)
+    played, points = get_player_division_record(sheets, "Diamond", "samwise-mordek")
+    assert (played, points) == (3, 5)
 
 
 def test_get_player_division_record_opponent_perspective():
+    """Carol's points are the complement per match: 0, 0, 1 -> played=3, points=1."""
     sheets = _summary_sheets()
-    played, won = get_player_division_record(sheets, "Diamond", "carol-rogue")
-    assert (played, won) == (2, 1)  # Carol lost week 1, won week 3
+    played, points = get_player_division_record(sheets, "Diamond", "carol-rogue")
+    assert (played, points) == (3, 1)
 
 
 def test_get_player_division_record_unknown_division_returns_zero():
     sheets = _summary_sheets()
     assert get_player_division_record(sheets, "Nonexistent", "samwise-mordek") == (0, 0)
-    assert normalize_name(None) == ""

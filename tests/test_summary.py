@@ -89,15 +89,19 @@ async def test_summary_builds_character_and_total_lines():
     destination.send = AsyncMock()
 
     characters = [
-        {"hero_key": "samwise-mordek", "display_name": "Samwise - Mordek", "ancestry": "Human", "class": "Warlock"},
-        {"hero_key": "samwise-fizzle", "display_name": "Samwise - Fizzle", "ancestry": "Gnome", "class": "Tinkerer"},
+        {"hero_key": "samwise-mordek", "display_name": "Samwise - Mordek", "hero_name": "Mordek",
+         "ancestry": "Human", "class": "Warlock"},
+        {"hero_key": "samwise-fizzle", "display_name": "Samwise - Fizzle", "hero_name": "Fizzle",
+         "ancestry": "Gnome", "class": "Tinkerer"},
     ]
 
     def fake_rank(sheets, hero_key):
-        return ("Diamond", 1) if hero_key == "samwise-mordek" else (None, None)
+        return ("Diamond", 1, 2) if hero_key == "samwise-mordek" else (None, None, None)
 
     def fake_record(sheets, division, hero_key):
-        return (2, 1) if hero_key == "samwise-mordek" else (0, 0)
+        # 3 played, 5 points (e.g. two 2-0 wins + one 1-1 draw) -> not a
+        # binary win count, exercises the points/(played*2) formula.
+        return (3, 5) if hero_key == "samwise-mordek" else (0, 0)
 
     with patch("commands.get_tournament_sheets_async", return_value={}), \
          patch("commands.get_player_characters", return_value=characters), \
@@ -107,12 +111,14 @@ async def test_summary_builds_character_and_total_lines():
 
     sent = "\n".join(c.args[0] for c in destination.send.call_args_list)
     assert "Echoes of Valor" in sent
-    assert "Samwise - Mordek" in sent and "Diamond, rank #1" in sent
-    assert "2 played, 1 won (50%)" in sent
-    assert "Samwise - Fizzle" in sent and "unranked, rank —" in sent
-    assert "0 played, 0 won (—)" in sent
-    # Total across both characters: 2 played, 1 won combined.
-    assert "**Total:** 2 played, 1 won (50%)" in sent
+    # Division comes before the character name; no player name shown.
+    assert "**Diamond** — Mordek (Human Warlock) — 1st out of 2" in sent
+    assert "Samwise -" not in sent  # the "Player - Hero" display_name form must not leak in
+    assert "3 played, 5 points (83%)" in sent
+    assert "**Unranked** — Fizzle (Gnome Tinkerer) —" in sent
+    assert "0 played, 0 points (—)" in sent
+    # Total across both characters: 3 played, 5 points combined.
+    assert "**Total:** 3 played, 5 points (83%)" in sent
 
 
 @pytest.mark.asyncio
@@ -129,12 +135,13 @@ async def test_summary_skips_tournaments_with_no_characters():
     def side_effect(sheets, player, sheet_name, mapping):
         calls["n"] += 1
         if calls["n"] == 1:
-            return [{"hero_key": "scorium-x", "display_name": "Scorium - X", "ancestry": "A", "class": "B"}]
+            return [{"hero_key": "scorium-x", "display_name": "Scorium - X", "hero_name": "X",
+                      "ancestry": "A", "class": "B"}]
         return []
 
     with patch("commands.get_tournament_sheets_async", return_value={}), \
          patch("commands.get_player_characters", side_effect=side_effect), \
-         patch("commands.find_player_division_rank", return_value=(None, None)), \
+         patch("commands.find_player_division_rank", return_value=(None, None, None)), \
          patch("commands.get_player_division_record", return_value=(0, 0)):
         await cog._build_and_send_player_summary(destination, "Scorium", context={'tournament': None})
 
