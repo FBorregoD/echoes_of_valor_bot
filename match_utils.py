@@ -941,14 +941,18 @@ def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | N
 def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: str) -> tuple[int, int]:
     """
     Count (played, points) for `hero_key` (a normalized "player-hero" string)
-    across every week of `division_name`'s match schedule. Only verified
-    matches (check == "OK") count — pending and misreported rows don't,
-    matching how the rest of the bot distinguishes "finished" matches.
+    across every week of `division_name`'s match schedule. A match counts as
+    played only if both scores are reported AND score1 + score2 == 2 — that
+    total is what actually marks a match as a completed, valid result
+    (matches are best-of-two games, so the two scores always add up to 2 for
+    a real result — 0/1 totals mean unplayed or a bad entry). The "check"
+    column is intentionally NOT used here — it doesn't reliably line up with
+    whether the scores themselves are a valid completed result.
 
     Each match awards the player their own score1/score2 value (0, 1, or 2 —
-    matches are best-of-two games, so a 1-1 draw is possible, not just a
-    binary win/loss), so `points` is a sum, not a win count. Win% is
-    `points / (played * 2)`, since 2 is the max a player can earn per match.
+    a 1-1 draw is possible, not just a binary win/loss), so `points` is a
+    sum, not a win count. Win% is `points / (played * 2)`, since 2 is the
+    max a player can earn per match.
     """
     played = 0
     points = 0
@@ -975,9 +979,6 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
         player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
         if not player1 and not player2:
             continue
-        check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
-        if check != "OK":
-            continue
 
         is_p1 = normalize_name(player1) == hero_key
         is_p2 = normalize_name(player2) == hero_key
@@ -992,6 +993,8 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
             score1 = float(s1)
             score2 = float(s2)
         except (ValueError, TypeError):
+            continue
+        if score1 + score2 != 2:
             continue
 
         played += 1

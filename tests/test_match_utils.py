@@ -203,10 +203,11 @@ def _summary_sheets():
         [None, None, None, None, None, None, None],
         ['SCHEDULE', None, None, None, None, None, None],
         ['Week 1', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, 'OK'],
-        ['Week 2', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', None, None, ''],
+        ['Week 2', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', None, None, ''],  # unreported, excluded
         ['Week 3', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, 'OK'],
-        ['Week 4', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 0, 'NO'],  # misreported, excluded
-        ['Week 5', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 1, 'OK'],  # draw
+        ['Week 4', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 0, 'NO'],  # sum=1, excluded regardless of check
+        ['Week 5', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 1, 1, 'OK'],  # draw, sum=2, counted
+        ['Week 6', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, ''],  # check isn't 'OK' but sum=2, counted anyway
     ], columns=['A', 'B', 'C', 'D', 'E', 'F', 'G'])
 
     builds = pd.DataFrame([
@@ -261,23 +262,26 @@ def test_find_player_division_rank_not_ranked_returns_none():
     assert total is None
 
 
-def test_get_player_division_record_counts_only_verified_matches():
+def test_get_player_division_record_counts_by_score_sum_not_check_column():
     """
-    Week 1: OK 2-0 win, Week 2: unreported (excluded), Week 3: OK 2-0 win,
-    Week 4: misreported (check='NO', excluded), Week 5: OK 1-1 draw ->
-    played=3, points=2+2+1=5. Points are a 0-2 sum per match, not a binary
-    win count (a draw earns 1 point, not 0).
+    Week 1: 2-0 (sum=2, counted), Week 2: unreported (excluded, no scores),
+    Week 3: 2-0 (sum=2, counted), Week 4: 1-0 (sum=1, excluded — even though
+    nothing about check='NO' is consulted, the bad sum alone excludes it),
+    Week 5: 1-1 draw (sum=2, counted), Week 6: 2-0 with check='' (sum=2,
+    counted anyway — proves the "check" column is NOT what gates this).
+    -> played=4, points=2+2+1+2=7. Points are a 0-2 sum per match, not a
+    binary win count (a draw earns 1 point, not 0).
     """
     sheets = _summary_sheets()
     played, points = get_player_division_record(sheets, "Diamond", "samwise-mordek")
-    assert (played, points) == (3, 5)
+    assert (played, points) == (4, 7)
 
 
 def test_get_player_division_record_opponent_perspective():
-    """Carol's points are the complement per match: 0, 0, 1 -> played=3, points=1."""
+    """Carol's points are the complement per match: 0, 0, 1, 0 -> played=4, points=1."""
     sheets = _summary_sheets()
     played, points = get_player_division_record(sheets, "Diamond", "carol-rogue")
-    assert (played, points) == (3, 1)
+    assert (played, points) == (4, 1)
 
 
 def test_get_player_division_record_unknown_division_returns_zero():

@@ -376,8 +376,9 @@ class TournamentCommands(commands.Cog):
         """
         Build and send a per-tournament stats summary for `player`: every
         registered character (hero) with class/race, division, ranking
-        position, and their played/points/win% record (only check=='OK'
-        matches count), followed by a per-tournament total across all of
+        position, and their played/points/win% record (only matches where
+        score1 + score2 == 2 count as played — see get_player_division_record),
+        followed by a per-tournament total across all of
         that player's characters. Text-only for now. Shared by
         summary_command and notify_subscribed_players, which appends this
         after the matches DM (pass {'tournament': None} for a DM-equivalent,
