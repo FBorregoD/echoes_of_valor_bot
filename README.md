@@ -86,6 +86,7 @@ python main.py
 
 ```jsonc
 {
+  "config_url": "https://drive.google.com/file/d/<id>/view?usp=sharing",
   "tournaments": [
     {
       "name": "Echoes of Valor",
@@ -114,10 +115,10 @@ python main.py
 }
 ```
 
-- **`tournaments`** — one entry per tournament. `url` is the tournament's Google Sheet (division sheets are auto-detected by looking for a `SCHEDULE` marker). `builds_sheet`/`builds_mapping` point at the hero-builds/roster sheet used for build lookups and to validate `!subscribe`.
+- **`config_url`** *(optional)* — a JSON file (e.g. on Google Drive, shared as "Anyone with the link can view") holding the **full** configuration, with exactly the same structure as this file. When set, the bot loads it **at startup** and uses it *instead of* everything else in the local `config.json` (nothing is merged) — so tournaments, channels, admins, prefixes, etc. can all be changed without a code push, just a bot restart. If the download fails or the remote file is invalid (missing tournament keys, `admin_user_ids` written as text instead of numbers, empty prefix, ...), the bot logs a warning with the reason and falls back to the rest of the local `config.json`; if that isn't a usable config either, it refuses to start. Keep the local copy reasonably in sync so the fallback is sensible.
+- **`tournaments`** — one entry per tournament (each needs `name`, `alias`, `url`, `builds_sheet`, `builds_mapping`, `season`). `url` is the tournament's Google Sheet (division sheets are auto-detected by looking for a `SCHEDULE` marker). `builds_sheet`/`builds_mapping` point at the hero-builds/roster sheet used for build lookups and to validate `!subscribe`.
 - **`mapping_sheet_url`** — a separate sheet of `player name → Discord ID`, used only by `!sendto`/`!notify_all`/`!test_map`/`!test_id` to DM a specific player. Not the tournament roster (that's the builds sheet above).
 - **`guild_channels`** — per-server channel-to-tournament binding and an optional per-server prefix override (falls back to the top-level `command_prefix`). A channel with `"tournament": null` is treated as a neutral/admin channel.
-- `config.test.json` is a trimmed copy of this file scoped to just the test servers — see [Environment variables](#environment-variables).
 
 ## Google Sheet format
 
@@ -143,22 +144,10 @@ The bot doesn't use the Google Sheets API — it fetches sheets as public CSV ex
 | Variable | Required | Purpose |
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes* | The bot's Discord token. |
-| `CONFIG_FILE` | No | Path to the config file to load. Defaults to `config.json`. Set to `config.test.json` to run locally against the test servers without touching the production config. |
+| `CONFIG_FILE` | No | Path to the config file to load. Defaults to `config.json`. |
 | `RAILWAY_VOLUME_MOUNT_PATH` | No | Auto-set by Railway once a persistent volume is attached to the service. When present, `tasks.db` (the scheduler/subscriptions database) is stored there instead of the working directory, so it survives redeploys. Unset locally — `tasks.db` just lives in the repo root. |
 
 \* If `DISCORD_BOT_TOKEN` isn't set, the bot falls back to reading a token from `var/env.txt` (gitignored) — convenient for local dev, but the env var is what production (Railway) uses.
-
-**Running locally against the test servers:**
-
-```bash
-# bash / macOS / Linux
-CONFIG_FILE=config.test.json python main.py
-```
-
-```powershell
-# PowerShell
-$env:CONFIG_FILE = "config.test.json"; python main.py
-```
 
 ## Running tests
 
