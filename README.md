@@ -131,9 +131,11 @@ The bot doesn't use the Google Sheets API — it fetches sheets as public CSV ex
 
   | Col A | Col B | Col C (player1) | Col D (player2) | Col E (score1) | Col F (score2) | Col G (check) |
   |---|---|---|---|---|---|---|
-  | *(week marker)* | Round label | `PlayerName - HeroName` | `PlayerName - HeroName` | number | number | `OK` / anything else |
+  | *(week marker)* | Round label | `PlayerName - HeroName` | `PlayerName - HeroName` | number | number | *(ignored by the bot)* |
 
-  Both player cells **must** contain a literal `" - "` separating the player name from their chosen hero — this is how the bot tells a real match row from a header row, and how it later extracts just the player name for `!m`/`!subscribe` lookups. A match is considered "misreported" if `check != "OK"` and `score1 + score2` isn't 0 or 2.
+  Both player cells **must** contain a literal `" - "` separating the player name from their chosen hero — this is how the bot tells a real match row from a header row, and how it later extracts just the player name for `!m`/`!subscribe` lookups.
+
+  A match's state is decided **only from the two score cells** (`read_match_result` in `match_utils.py`) — the check column is edited by hand and isn't trusted. Matches are best-of-two: **finished** = both scores in 0/1/2 adding up to 2 (`2-0`, `0-2`, `1-1`); **not started** = `0-0` or both cells empty; **misreported** = anything else (e.g. `2-2`, `1-0`, only one cell filled, text instead of a number). Past-week matches that aren't finished show up as pending (or misreported).
 
 **Hero-builds / roster sheet** (one per tournament, named e.g. `hero builds Season 10`, referenced by `builds_sheet` in config): a header row containing "tier" or "player" (auto-detected, or matched via the `builds_mapping` column names/indices), then one row per registered player with their `Player - Hero` name in `player_col` and their ancestry/class in `ancestry_col`/`class_col`. This sheet is the actual tournament roster — it's what `!subscribe` validates player names against, independent of whether that player has any matches yet.
 
@@ -156,6 +158,8 @@ python -m pytest tests/ -v
 ```
 
 Tests mock Discord and Google Sheets entirely — no token or network access needed. A few database tests spin up a throwaway temp SQLite file rather than touching `tasks.db`.
+
+**Season simulation** (needs network, no Discord): `python tools/simulate_season.py [--player Tuff] [--save-images DIR]` runs the real auto-advancing `post_divisions` scheduler task week by week against a real, completed tournament sheet (EoV season 10 by default), hiding results that "haven't been played yet" and reporting a few late so pending matches appear. After each fire it prints what was posted, the task's `current_week`, and what `!m <player>` would show — useful to check the season-end transition without waiting real weeks.
 
 ## Deployment
 

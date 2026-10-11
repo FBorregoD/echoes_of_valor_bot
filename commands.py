@@ -326,7 +326,7 @@ class TournamentCommands(commands.Cog):
                 cur_rows = []
                 for m in current:
                     ph, opp = pick(m)
-                    finished = m.get('check', '') == 'OK'
+                    finished = bool(m.get('finished'))
                     cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished))
 
                 normal_pend, misreported = self._split_pending(pending)
@@ -685,7 +685,7 @@ class TournamentCommands(commands.Cog):
                     # Texto directo
                     lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {week}"]
                     for m in current:
-                        status = " ✓" if m.get('check', '') == "OK" else ""
+                        status = " ✓" if m.get('finished') else ""
                         lines.append(f"{m['player1']} vs {m['player2']}{status}")
                     if pending:
                         lines.append("**⏳ Pending:**")
@@ -706,7 +706,7 @@ class TournamentCommands(commands.Cog):
                         # Fallback a texto
                         lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {week}"]
                         for m in current:
-                            status = " ✓" if m.get('check', '') == "OK" else ""
+                            status = " ✓" if m.get('finished') else ""
                             lines.append(f"{m['player1']} vs {m['player2']}{status}")
                         if pending:
                             lines.append("**⏳ Pending:**")

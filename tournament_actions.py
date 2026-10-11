@@ -68,7 +68,7 @@ def build_division_image(tourney_name: str, div_name: str, week: int,
 
     cur_rows = [
         (m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]),
-         m.get("check", "") == "OK")
+         bool(m.get("finished")))
         for m in current
     ]
 
@@ -107,7 +107,7 @@ async def send_division_image(destination, tourney_name: str, div_name: str, wee
         logger.error(f"Image render failed for {div_name}: {e}", exc_info=True)
         lines = [f"**🏆 {tourney_name} · {div_name}** — Week {week}"]
         for m in current:
-            status = " ✓" if m.get("check", "") == "OK" else ""
+            status = " ✓" if m.get("finished") else ""
             lines.append(f"{m['player1']} vs {m['player2']}{status}")
         normal_pend, misreported = _split_pending(pending)
         if normal_pend:

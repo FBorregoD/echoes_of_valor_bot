@@ -365,6 +365,49 @@ def parse_week_number(week_str: str):
     match = re.search(r'\d+', str(week_str))
     return int(match.group()) if match else None
 
+
+VALID_GAME_SCORES = (0, 1, 2)
+
+
+def read_match_result(row) -> dict:
+    """
+    Decide a match row's state from its scores alone (columns E/F).
+
+    The sheet's "check" column (G) is deliberately ignored: it's edited by
+    hand and admins sometimes get it wrong, so the scores are the truth.
+    Matches are best-of-two, so:
+      - finished:    both scores in 0/1/2 and they add up to 2 (2-0, 0-2, 1-1)
+      - not started: 0-0 or both cells empty
+      - misreported: anything else (2-2, 1-0, one cell empty, non-numeric, ...)
+
+    Returns {"score1", "score2", "total", "finished", "misreported"}; scores
+    are 0 and total is None when the cells can't be read as numbers.
+    """
+    raw = [row.iloc[i] if len(row) > i else None for i in (4, 5)]
+    blank = [v is None or pd.isna(v) or str(v).strip() == "" for v in raw]
+    unreadable = {"score1": 0, "score2": 0, "total": None, "finished": False}
+
+    if all(blank):
+        return {**unreadable, "misreported": False}
+    if any(blank):
+        return {**unreadable, "misreported": True}
+    try:
+        score1 = float(raw[0])
+        score2 = float(raw[1])
+    except (ValueError, TypeError):
+        return {**unreadable, "misreported": True}
+
+    total = score1 + score2
+    finished = total == 2 and score1 in VALID_GAME_SCORES and score2 in VALID_GAME_SCORES
+    not_started = score1 == 0 and score2 == 0
+    return {
+        "score1": score1,
+        "score2": score2,
+        "total": total,
+        "finished": finished,
+        "misreported": not finished and not not_started,
+    }
+
 def get_player_matches(sheets_dict: dict, player: str, target_week: int):
     current_matches = []
     pending_matches = []
@@ -393,50 +436,17 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
             player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
             if not player1 and not player2:
                 continue
-            check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
-
-            # ---- read scores ----
-            score1 = 0
-            score2 = 0
-            total = None
-            try:
-                s1 = row.iloc[4]
-                s2 = row.iloc[5]
-                if pd.notna(s1) and pd.notna(s2):
-                    score1 = float(s1)
-                    score2 = float(s2)
-                    total = score1 + score2
-                else:
-                    total = None
-            except (ValueError, TypeError):
-                total = None
-            # ------------------
-            match = {
-                "week": current_week,
-                "player1": player1,
-                "player2": player2,
-                "division": sheet_name,
-                "check": check,
-                "score1": score1,      # NUEVO
-                "score2": score2,      # NUEVO
-                "total": total,        # NUEVO
-                "misreported": (check != "OK" and total is not None and total not in [0, 2]),
-            }
             if player_matches(player, player1) or player_matches(player, player2):
                 match = {
                     "week": current_week,
                     "player1": player1,
                     "player2": player2,
                     "division": sheet_name,
-                    "check": check,
-                    "score1": score1,
-                    "score2": score2,
-                    "total": total,
-                    "misreported": (check != "OK" and total is not None and total not in [0, 2]),
+                    **read_match_result(row),
                 }
                 if current_week == target_week:
                     current_matches.append(match)
-                elif current_week < target_week and check != "OK":
+                elif current_week < target_week and not match["finished"]:
                     pending_matches.append(match)
     return current_matches, pending_matches
 
@@ -474,43 +484,21 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
         player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
         if not player1 and not player2:
             continue
-        check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
         pair = tuple(sorted([normalize_name(player1), normalize_name(player2)]))
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
-
-        # ---- read scores for misreport detection ----
-        score1 = 0
-        score2 = 0
-        total = None
-        try:
-            s1 = row.iloc[4]
-            s2 = row.iloc[5]
-            if pd.notna(s1) and pd.notna(s2):
-                score1 = float(s1)
-                score2 = float(s2)
-                total = score1 + score2
-            else:
-                total = None
-        except (ValueError, TypeError):
-            total = None
-        # -------------------------------------------
 
         match = {
             "week": current_week,
             "player1": player1,
             "player2": player2,
             "division": target_sheet,
-            "check": check,
-            "score1": score1,      # NUEVO
-            "score2": score2,      # NUEVO
-            "total": total,        # NUEVO
-            "misreported": (check != "OK" and total is not None and total not in [0, 2]),
+            **read_match_result(row),
         }
         if current_week == target_week:
             current.append(match)
-        elif current_week < target_week and check != "OK":
+        elif current_week < target_week and not match["finished"]:
             pending.append(match)
     return current, pending
 
@@ -685,7 +673,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
     """
     Build match info as plain-text lines (used for DMs and inline replies).
     Always uses single-line format: Division · Player (build) vs Opponent (build)
-    Adds a ✓ suffix if the match is complete (check == 'OK').
+    Adds a ✓ suffix if the match is finished (scores add up to 2 — see read_match_result).
     """
     try:
         sheets = get_tournament_sheets(tournament['url'], force_refresh=force_refresh)
@@ -701,7 +689,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
             lines.append(f"**Week {week} matches:**")
             for m in current:
                 ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
-                status = " ✓" if m.get('check', '') == "OK" else ""
+                status = " ✓" if m.get('finished') else ""
                 lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}{status}")
         else:
             lines.append("📅 No matches found for this week.")
@@ -942,12 +930,9 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
     """
     Count (played, points) for `hero_key` (a normalized "player-hero" string)
     across every week of `division_name`'s match schedule. A match counts as
-    played only if both scores are reported AND score1 + score2 == 2 — that
-    total is what actually marks a match as a completed, valid result
-    (matches are best-of-two games, so the two scores always add up to 2 for
-    a real result — 0/1 totals mean unplayed or a bad entry). The "check"
-    column is intentionally NOT used here — it doesn't reliably line up with
-    whether the scores themselves are a valid completed result.
+    played only if read_match_result says it's finished (both scores in 0/1/2
+    adding up to 2 — matches are best-of-two games). The "check" column is
+    intentionally NOT used — it's edited by hand and isn't reliable.
 
     Each match awards the player their own score1/score2 value (0, 1, or 2 —
     a 1-1 draw is possible, not just a binary win/loss), so `points` is a
@@ -985,20 +970,12 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
         if not (is_p1 or is_p2):
             continue
 
-        s1 = row.iloc[4] if len(row) > 4 else None
-        s2 = row.iloc[5] if len(row) > 5 else None
-        if pd.isna(s1) or pd.isna(s2):
-            continue
-        try:
-            score1 = float(s1)
-            score2 = float(s2)
-        except (ValueError, TypeError):
-            continue
-        if score1 + score2 != 2:
+        result = read_match_result(row)
+        if not result["finished"]:
             continue
 
         played += 1
-        my_score = score1 if is_p1 else score2
+        my_score = result["score1"] if is_p1 else result["score2"]
         points += int(my_score)
 
     return played, points

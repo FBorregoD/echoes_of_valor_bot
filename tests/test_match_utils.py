@@ -11,6 +11,7 @@ import time
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 import match_utils
 from match_utils import normalize_name
@@ -287,3 +288,78 @@ def test_get_player_division_record_opponent_perspective():
 def test_get_player_division_record_unknown_division_returns_zero():
     sheets = _summary_sheets()
     assert get_player_division_record(sheets, "Nonexistent", "samwise-mordek") == (0, 0)
+
+
+# ── Match state from scores only (check column ignored) ────────────────────
+# 2026-10 regression: the hand-edited "check" column (G) used to decide
+# pending/finished, and admins sometimes set it wrong — finished 2-0/1-1
+# matches showed as pending and unplayed 0-0 ones were treated as done.
+
+from match_utils import read_match_result, get_player_matches, get_division_matches
+
+
+def _row(s1, s2, check="OK"):
+    return pd.Series(['Week 1', 'Round 1', 'A - X', 'B - Y', s1, s2, check])
+
+
+@pytest.mark.parametrize("s1, s2, finished, misreported", [
+    (2, 0, True, False),
+    (0, 2, True, False),
+    (1, 1, True, False),
+    ("2", "0", True, False),          # numbers stored as text
+    (0, 0, False, False),             # not started
+    (None, None, False, False),       # not started, empty cells
+    ("", " ", False, False),
+    (2, 2, False, True),
+    (1, 0, False, True),
+    (3, -1, False, True),             # sums to 2 but impossible scores
+    (2, None, False, True),           # only one score entered
+    ("W", "L", False, True),          # text instead of numbers
+])
+def test_read_match_result_states(s1, s2, finished, misreported):
+    result = read_match_result(_row(s1, s2))
+    assert result["finished"] is finished
+    assert result["misreported"] is misreported
+
+
+@pytest.mark.parametrize("check", ["OK", "NO", "", None])
+def test_read_match_result_ignores_check_column(check):
+    assert read_match_result(_row(2, 0, check))["finished"] is True
+    assert read_match_result(_row(0, 0, check))["finished"] is False
+    assert read_match_result(_row(2, 2, check))["misreported"] is True
+
+
+def _division_with_wrong_checks():
+    return {"Diamond": pd.DataFrame([
+        ['SCHEDULE', None, None, None, None, None, None],
+        ['Week 1', 'Round 1', 'Samwise - Mordek', 'Carol - Rogue', 2, 0, 'NO'],   # done, check wrong
+        ['Week 1', 'Round 1', 'Tuff - Calcium', 'Dave - Monk', 0, 0, 'OK'],       # unplayed, check wrong
+        ['Week 2', 'Round 1', 'Samwise - Mordek', 'Dave - Monk', 1, 1, ''],       # done (draw), no check
+        ['Week 2', 'Round 1', 'Tuff - Calcium', 'Carol - Rogue', 2, 2, 'OK'],     # misreported, check wrong
+        ['Week 3', 'Round 1', 'Samwise - Mordek', 'Tuff - Calcium', 0, 0, 'NO'],
+        ['Week 3', 'Round 1', 'Carol - Rogue', 'Dave - Monk', 0, 2, 'NO'],        # current week, done
+    ], columns=list('ABCDEFG'))}
+
+
+def _pairs(matches):
+    return {(m["week"], m["player1"], m["player2"]) for m in matches}
+
+
+def test_division_pending_uses_scores_not_check():
+    current, pending = get_division_matches(_division_with_wrong_checks(), "Diamond", 3)
+    assert _pairs(pending) == {
+        (1, 'Tuff - Calcium', 'Dave - Monk'),       # 0-0 but check said OK → still pending
+        (2, 'Tuff - Calcium', 'Carol - Rogue'),     # 2-2 → pending + misreported
+    }
+    assert [m for m in pending if m["misreported"]][0]["week"] == 2
+    finished_now = {(m["player1"], m["player2"]): m["finished"] for m in current}
+    assert finished_now == {('Samwise - Mordek', 'Tuff - Calcium'): False,
+                            ('Carol - Rogue', 'Dave - Monk'): True}   # ✓ even with check 'NO'
+
+
+def test_player_pending_uses_scores_not_check():
+    sheets = _division_with_wrong_checks()
+    _, samwise_pending = get_player_matches(sheets, "Samwise", 3)
+    assert samwise_pending == []          # 2-0 (check NO) and 1-1 (no check) are both done
+    _, tuff_pending = get_player_matches(sheets, "Tuff", 3)
+    assert {m["week"] for m in tuff_pending} == {1, 2}
