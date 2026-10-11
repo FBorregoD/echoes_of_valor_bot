@@ -13,18 +13,17 @@ import discord
 import io
 from image_render import render_matchups
 from match_utils import (
-    get_tournament_sheets,
+    get_tournament_sheets_async,
     get_division_matches,
     get_player_matches,
     load_hero_builds_from_sheets,
-    load_player_mapping,
+    load_player_mapping_async,
     send_dm_to_player,
     split_message,
     normalize_name,
-    week_has_matches,
     is_division_sheet,
     player_matches,
-    format_table_messages, 
+    format_table_messages,
     get_all_misreported_matches
 )
 
@@ -69,7 +68,7 @@ def build_division_image(tourney_name: str, div_name: str, week: int,
 
     cur_rows = [
         (m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]),
-         m.get("check", "") == "OK")
+         bool(m.get("finished")))
         for m in current
     ]
 
@@ -108,7 +107,7 @@ async def send_division_image(destination, tourney_name: str, div_name: str, wee
         logger.error(f"Image render failed for {div_name}: {e}", exc_info=True)
         lines = [f"**🏆 {tourney_name} · {div_name}** — Week {week}"]
         for m in current:
-            status = " ✓" if m.get("check", "") == "OK" else ""
+            status = " ✓" if m.get("finished") else ""
             lines.append(f"{m['player1']} vs {m['player2']}{status}")
         normal_pend, misreported = _split_pending(pending)
         if normal_pend:
@@ -163,7 +162,7 @@ async def run_post_divisions(
         return 0, [], []
 
     try:
-        sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+        sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
     except Exception as e:
         error_msg = f"❌ Failed to load sheet for **{tourney['name']}**. Check the URL or connection."
         logger.error(f"Error loading sheets for {tourney['name']}: {e}", exc_info=True)
@@ -228,7 +227,7 @@ async def run_notify_all(
     Returns (success_count, total_players_with_pending).
     """
     week = resolve_week(week_raw, default_week)
-    mapping = load_player_mapping(mapping_url)
+    mapping = await load_player_mapping_async(mapping_url)
     if not mapping:
         await destination.send("❌ No player mapping loaded. Cannot proceed.")
         return 0, 0
@@ -237,7 +236,7 @@ async def run_notify_all(
     tourney_data = {}
     for tourney in tournaments:
         try:
-            sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+            sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
             builds = load_hero_builds_from_sheets(
                 sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
             )
@@ -311,7 +310,7 @@ async def run_post_standings(
         return 0, [], []
 
     try:
-        sheets = get_tournament_sheets(tourney['url'], force_refresh=force_refresh)
+        sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
     except Exception as e:
         error_msg = f"❌ Failed to load standings sheet for **{tourney['name']}**. Check URL."
         await destination.send(error_msg)
@@ -373,16 +372,19 @@ async def advance_auto_week(
     *,
     task_id: int,
     current_week: int,
-    sheets_by_tourney: dict,
     destination: discord.abc.Messageable,
     action_name: str,
     end_week: int | None = None,
 ):
     """
     After a successful scheduled run, advance current_week by 1.
-    Stops (marks exhausted) if:
-      - end_week is set and next_week > end_week, OR
-      - no matches exist for the next week in any tournament.
+    Stops (marks exhausted) only if end_week is set and next_week > end_week.
+
+    Running out of matches is detected separately, the *next* time this task
+    fires (see SchedulerCog._dispatch's season-over check) rather than by
+    peeking ahead here — that way the week that was just posted still counts
+    as "current" (for !m, etc.) for the rest of its run, instead of flipping
+    to "season over" the instant it's announced.
     """
     from scheduler import update_current_week
 
@@ -399,22 +401,8 @@ async def advance_auto_week(
         logger.info(f"Task {task_id}: end_week {end_week} reached — marked as exhausted.")
         return
 
-    has_next = any(
-        week_has_matches(sheets, next_week)
-        for sheets in sheets_by_tourney.values()
-    )
-
-    if has_next:
-        update_current_week(task_id, next_week)
-        logger.info(f"Task {task_id}: advanced to week {next_week}.")
-    else:
-        update_current_week(task_id, -1)
-        await destination.send(
-            f"🏁 **Season complete!** No matches found for week {next_week}. "
-            f"Scheduled task `{action_name}` (ID {task_id}) will no longer run automatically. "
-            f"Use `!schedule remove {task_id}` to clean it up if needed."
-        )
-        logger.info(f"Task {task_id}: no week {next_week} — marked as exhausted.")
+    update_current_week(task_id, next_week)
+    logger.info(f"Task {task_id}: advanced to week {next_week}.")
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -473,7 +461,7 @@ async def run_report_misreported(
 
     for tourney in tourney_list:
         try:
-            sheets = get_tournament_sheets(tourney['url'], force_refresh=False)
+            sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
             builds = load_hero_builds_from_sheets(sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping'))
             mis = get_all_misreported_matches(sheets)
 

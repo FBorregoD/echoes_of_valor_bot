@@ -1,4 +1,6 @@
+import asyncio
 import re
+import threading
 import time
 import logging
 import unicodedata
@@ -15,6 +17,22 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------
 CACHE_TTL = 300  # seconds (5 minutes)
 _memory_cache: dict[str, tuple] = {}
+
+# get_tournament_sheets runs in a worker thread (via asyncio.to_thread from
+# the async wrappers below), so several requests can now genuinely race on
+# the same URL. Per-URL locks make concurrent misses on a cold/expired cache
+# entry wait for a single in-flight fetch instead of stampeding Google Sheets.
+_fetch_locks: dict[str, threading.Lock] = {}
+_fetch_locks_guard = threading.Lock()
+
+
+def _get_fetch_lock(url: str) -> threading.Lock:
+    with _fetch_locks_guard:
+        lock = _fetch_locks.get(url)
+        if lock is None:
+            lock = threading.Lock()
+            _fetch_locks[url] = lock
+        return lock
 
 
 def load_cached_sheets(url: str):
@@ -36,21 +54,30 @@ def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
         cached = load_cached_sheets(tournament_url)
         if cached is not None:
             return cached
-    logger.info(f"Fetching sheets from: {tournament_url}")
-    max_retries = 2
-    delay = 1  # segundos
-    for attempt in range(max_retries):
-        try:
-            sheets = ggx.data_fromAllSheets(tournament_url)
-            save_cached_sheets(tournament_url, sheets)
-            return sheets
-        except Exception as e:
-            logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {tournament_url}: {e}")
-            if attempt == max_retries - 1:
-                logger.error(f"All retries failed for {tournament_url}: {e}", exc_info=True)
-                raise
-            time.sleep(delay)
-    return None  # no debería llegar
+
+    with _get_fetch_lock(tournament_url):
+        # Re-check: another thread may have just finished fetching while we
+        # were waiting for the lock.
+        if not force_refresh:
+            cached = load_cached_sheets(tournament_url)
+            if cached is not None:
+                return cached
+
+        logger.info(f"Fetching sheets from: {tournament_url}")
+        max_retries = 2
+        delay = 1  # segundos
+        for attempt in range(max_retries):
+            try:
+                sheets = ggx.data_fromAllSheets(tournament_url)
+                save_cached_sheets(tournament_url, sheets)
+                return sheets
+            except Exception as e:
+                logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {tournament_url}: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"All retries failed for {tournament_url}: {e}", exc_info=True)
+                    raise
+                time.sleep(delay)
+        return None  # no debería llegar
 
 
 def refresh_tournament_cache(tournament_url: str):
@@ -58,16 +85,60 @@ def refresh_tournament_cache(tournament_url: str):
 
 
 # ------------------------------------------------------------
+# Async wrappers — the single place that offloads the blocking,
+# timeout-less requests calls above onto a worker thread. Every async
+# call site should go through these instead of calling the sync
+# functions (or asyncio.to_thread) directly, so the offload + bounded
+# wait behavior lives in one spot instead of being repeated at each
+# call site.
+#
+# asyncio.wait_for bounds how long the *caller* waits — it does not (and
+# cannot) cancel the underlying blocking call, since Googlexcel_noPassword
+# exposes no timeout hook. A hung fetch still occupies a thread-pool worker
+# until it eventually returns or errors; this only stops individual
+# commands/tasks from hanging forever from the user's point of view.
+# ------------------------------------------------------------
+DEFAULT_FETCH_TIMEOUT = 30  # seconds
+
+
+async def get_tournament_sheets_async(tournament_url: str, force_refresh: bool = False,
+                                       timeout: float = DEFAULT_FETCH_TIMEOUT):
+    return await asyncio.wait_for(
+        asyncio.to_thread(get_tournament_sheets, tournament_url, force_refresh),
+        timeout=timeout,
+    )
+
+
+async def refresh_tournament_cache_async(tournament_url: str, timeout: float = DEFAULT_FETCH_TIMEOUT):
+    return await asyncio.wait_for(
+        asyncio.to_thread(refresh_tournament_cache, tournament_url),
+        timeout=timeout,
+    )
+
+
+# ------------------------------------------------------------
 # Helper: normalize names
 # ------------------------------------------------------------
 def normalize_name(name: str) -> str:
-    """Normalize player name: lowercase, remove extra spaces, normalize hyphens."""
+    """
+    Normalize player name: lowercase, collapse whitespace, normalize hyphens,
+    fold Latin accents to their base letter (e.g. 'é' -> 'e'). Non-Latin
+    scripts (CJK, Cyrillic, etc.) are preserved rather than stripped — the
+    previous `.encode('ascii', 'ignore')` approach silently deleted them,
+    collapsing every non-Latin name to the same empty string and colliding
+    in anything keyed by this function (hero-build lookups, misreported-match
+    dedup, !subscribe's per-player dedup key).
+    """
     if not name:
         return ""
-    name = unicodedata.normalize('NFKD', str(name))
-    name = name.encode('ascii', 'ignore').decode('ascii')
+    name = str(name)
+    # Normalize dash variants to a plain hyphen before any other processing —
+    # doing this after the accent fold would be too late, since NFKD leaves
+    # dash characters untouched (they have no decomposition).
     name = re.sub(r'[–—−]', '-', name)
     name = re.sub(r'\s*-\s*', '-', name)
+    name = unicodedata.normalize('NFKD', name)
+    name = ''.join(ch for ch in name if not unicodedata.combining(ch))
     return ' '.join(name.lower().split())
 
 
@@ -104,6 +175,14 @@ def _player_name(full: str) -> str:
     """Extract 'PlayerName' from 'PlayerName - HeroName'."""
     if ' - ' in full:
         return full.split(' - ')[0].strip()
+    return full.strip()
+
+
+def _hero_name(full: str) -> str:
+    """Extract 'HeroName' from 'PlayerName - HeroName' (split once, so a
+    hero name that itself contains ' - ' isn't cut short)."""
+    if ' - ' in full:
+        return full.split(' - ', 1)[1].strip()
     return full.strip()
 
 
@@ -145,13 +224,13 @@ def find_hero_builds_sheet(sheets_dict: dict, preferred_name: str = None):
     return None
 
 
-def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, column_mapping: dict = None):
-    builds = {}
-    target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
-    if not target_sheet:
-        return builds
-    df = sheets_dict[target_sheet]
-
+def _resolve_builds_layout(df, column_mapping: dict = None) -> tuple[dict, int]:
+    """
+    Shared header-row/column detection for the hero-builds sheet. Returns
+    (col_indices, start_row). Split out of load_hero_builds_from_sheets so
+    get_player_characters() can reuse the exact same layout logic instead of
+    re-implementing it.
+    """
     header_row = 0
     start_row = 0
     if column_mapping and any(isinstance(v, str) for v in column_mapping.values()):
@@ -197,9 +276,13 @@ def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, colu
     else:
         col_indices = {'player_col': 3, 'ancestry_col': 4, 'class_col': 5}
 
-    if col_indices.get('player_col') is None:
-        return builds
+    return col_indices, start_row
 
+
+def _iter_builds_rows(df, col_indices: dict, start_row: int):
+    """Yield (player_hero_raw, ancestry, class_) for each populated row below start_row."""
+    if col_indices.get('player_col') is None:
+        return
     for idx in range(start_row, len(df)):
         row = df.iloc[idx]
         if col_indices['player_col'] >= len(row):
@@ -223,10 +306,56 @@ def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, colu
             if not pd.isna(cls_cell):
                 class_ = str(cls_cell).strip()
 
+        yield player_hero, ancestry, class_
+
+
+def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, column_mapping: dict = None):
+    builds = {}
+    target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
+    if not target_sheet:
+        return builds
+    df = sheets_dict[target_sheet]
+    col_indices, start_row = _resolve_builds_layout(df, column_mapping)
+
+    for player_hero, ancestry, class_ in _iter_builds_rows(df, col_indices, start_row):
         norm_key = normalize_name(player_hero)
         builds[norm_key] = f"{ancestry} {class_}".strip()
 
     return builds
+
+
+def get_player_characters(sheets_dict: dict, player_name: str,
+                           sheet_name: str = None, column_mapping: dict = None) -> list[dict]:
+    """
+    Every hero-builds-sheet row registered to `player_name`, matched by
+    normalized prefix — the same convention !subscribe uses to validate a
+    player against the roster. A player can have more than one row (e.g.
+    registered in more than one division), so this returns a list, in sheet
+    order: [{"hero_key": "samwise-mordek", "display_name": "Samwise - Mordek",
+    "hero_name": "Mordek", "ancestry": ..., "class": ...}, ...].
+    """
+    characters = []
+    target_sheet = find_hero_builds_sheet(sheets_dict, sheet_name)
+    if not target_sheet:
+        return characters
+    df = sheets_dict[target_sheet]
+    col_indices, start_row = _resolve_builds_layout(df, column_mapping)
+
+    player_key = normalize_name(player_name)
+    prefix = player_key + "-"
+
+    for player_hero, ancestry, class_ in _iter_builds_rows(df, col_indices, start_row):
+        hero_key = normalize_name(player_hero)
+        if hero_key == player_key or hero_key.startswith(prefix):
+            characters.append({
+                "hero_key": hero_key,
+                "display_name": player_hero,
+                "hero_name": _hero_name(player_hero),
+                "ancestry": ancestry,
+                "class": class_,
+            })
+
+    return characters
 
 
 # ------------------------------------------------------------
@@ -235,6 +364,49 @@ def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, colu
 def parse_week_number(week_str: str):
     match = re.search(r'\d+', str(week_str))
     return int(match.group()) if match else None
+
+
+VALID_GAME_SCORES = (0, 1, 2)
+
+
+def read_match_result(row) -> dict:
+    """
+    Decide a match row's state from its scores alone (columns E/F).
+
+    The sheet's "check" column (G) is deliberately ignored: it's edited by
+    hand and admins sometimes get it wrong, so the scores are the truth.
+    Matches are best-of-two, so:
+      - finished:    both scores in 0/1/2 and they add up to 2 (2-0, 0-2, 1-1)
+      - not started: 0-0 or both cells empty
+      - misreported: anything else (2-2, 1-0, one cell empty, non-numeric, ...)
+
+    Returns {"score1", "score2", "total", "finished", "misreported"}; scores
+    are 0 and total is None when the cells can't be read as numbers.
+    """
+    raw = [row.iloc[i] if len(row) > i else None for i in (4, 5)]
+    blank = [v is None or pd.isna(v) or str(v).strip() == "" for v in raw]
+    unreadable = {"score1": 0, "score2": 0, "total": None, "finished": False}
+
+    if all(blank):
+        return {**unreadable, "misreported": False}
+    if any(blank):
+        return {**unreadable, "misreported": True}
+    try:
+        score1 = float(raw[0])
+        score2 = float(raw[1])
+    except (ValueError, TypeError):
+        return {**unreadable, "misreported": True}
+
+    total = score1 + score2
+    finished = total == 2 and score1 in VALID_GAME_SCORES and score2 in VALID_GAME_SCORES
+    not_started = score1 == 0 and score2 == 0
+    return {
+        "score1": score1,
+        "score2": score2,
+        "total": total,
+        "finished": finished,
+        "misreported": not finished and not not_started,
+    }
 
 def get_player_matches(sheets_dict: dict, player: str, target_week: int):
     current_matches = []
@@ -264,50 +436,17 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
             player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
             if not player1 and not player2:
                 continue
-            check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
-
-            # ---- read scores ----
-            score1 = 0
-            score2 = 0
-            total = None
-            try:
-                s1 = row.iloc[4]
-                s2 = row.iloc[5]
-                if pd.notna(s1) and pd.notna(s2):
-                    score1 = float(s1)
-                    score2 = float(s2)
-                    total = score1 + score2
-                else:
-                    total = None
-            except (ValueError, TypeError):
-                total = None
-            # ------------------
-            match = {
-                "week": current_week,
-                "player1": player1,
-                "player2": player2,
-                "division": sheet_name,
-                "check": check,
-                "score1": score1,      # NUEVO
-                "score2": score2,      # NUEVO
-                "total": total,        # NUEVO
-                "misreported": (check != "OK" and total is not None and total not in [0, 2]),
-            }
             if player_matches(player, player1) or player_matches(player, player2):
                 match = {
                     "week": current_week,
                     "player1": player1,
                     "player2": player2,
                     "division": sheet_name,
-                    "check": check,
-                    "score1": score1,
-                    "score2": score2,
-                    "total": total,
-                    "misreported": (check != "OK" and total is not None and total not in [0, 2]),
+                    **read_match_result(row),
                 }
                 if current_week == target_week:
                     current_matches.append(match)
-                elif current_week < target_week and check != "OK":
+                elif current_week < target_week and not match["finished"]:
                     pending_matches.append(match)
     return current_matches, pending_matches
 
@@ -345,43 +484,21 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
         player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
         if not player1 and not player2:
             continue
-        check = str(row.iloc[6]).strip() if len(row) > 6 and pd.notna(row.iloc[6]) else ""
         pair = tuple(sorted([normalize_name(player1), normalize_name(player2)]))
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
-
-        # ---- read scores for misreport detection ----
-        score1 = 0
-        score2 = 0
-        total = None
-        try:
-            s1 = row.iloc[4]
-            s2 = row.iloc[5]
-            if pd.notna(s1) and pd.notna(s2):
-                score1 = float(s1)
-                score2 = float(s2)
-                total = score1 + score2
-            else:
-                total = None
-        except (ValueError, TypeError):
-            total = None
-        # -------------------------------------------
 
         match = {
             "week": current_week,
             "player1": player1,
             "player2": player2,
             "division": target_sheet,
-            "check": check,
-            "score1": score1,      # NUEVO
-            "score2": score2,      # NUEVO
-            "total": total,        # NUEVO
-            "misreported": (check != "OK" and total is not None and total not in [0, 2]),
+            **read_match_result(row),
         }
         if current_week == target_week:
             current.append(match)
-        elif current_week < target_week and check != "OK":
+        elif current_week < target_week and not match["finished"]:
             pending.append(match)
     return current, pending
 
@@ -556,7 +673,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
     """
     Build match info as plain-text lines (used for DMs and inline replies).
     Always uses single-line format: Division · Player (build) vs Opponent (build)
-    Adds a ✓ suffix if the match is complete (check == 'OK').
+    Adds a ✓ suffix if the match is finished (scores add up to 2 — see read_match_result).
     """
     try:
         sheets = get_tournament_sheets(tournament['url'], force_refresh=force_refresh)
@@ -572,7 +689,7 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
             lines.append(f"**Week {week} matches:**")
             for m in current:
                 ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
-                status = " ✓" if m.get('check', '') == "OK" else ""
+                status = " ✓" if m.get('finished') else ""
                 lines.append(f"**{m['division']}** · {fmt(ph)} vs {fmt(opp)}{status}")
         else:
             lines.append("📅 No matches found for this week.")
@@ -590,6 +707,15 @@ def build_matches_message(tournament: dict, player: str, week: int, force_refres
         return None, f"Error in {tournament['name']}: {e}"
 
 
+async def build_matches_message_async(tournament: dict, player: str, week: int,
+                                       force_refresh: bool = False, builds: dict = None,
+                                       timeout: float = DEFAULT_FETCH_TIMEOUT):
+    return await asyncio.wait_for(
+        asyncio.to_thread(build_matches_message, tournament, player, week, force_refresh, builds),
+        timeout=timeout,
+    )
+
+
 # ------------------------------------------------------------
 # Player mapping
 # ------------------------------------------------------------
@@ -599,30 +725,43 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
         cached = load_cached_sheets(sheet_url)
         if cached is not None and isinstance(cached, dict):
             return cached
-    try:
-        sheets = ggx.data_fromAllSheets(sheet_url)
-        if not sheets:
-            return mapping
-        df = next(iter(sheets.values()))
-        for idx, row in df.iterrows():
-            player = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
-            id_val = row.iloc[1]
-            if pd.isna(id_val):
-                continue
-            try:
-                discord_id = int(float(id_val))
-            except (ValueError, TypeError):
-                id_str = str(id_val).strip()
-                if id_str.isdigit():
-                    discord_id = int(id_str)
-                else:
+    with _get_fetch_lock(sheet_url):
+        if not force_refresh:
+            cached = load_cached_sheets(sheet_url)
+            if cached is not None and isinstance(cached, dict):
+                return cached
+        try:
+            sheets = ggx.data_fromAllSheets(sheet_url)
+            if not sheets:
+                return mapping
+            df = next(iter(sheets.values()))
+            for idx, row in df.iterrows():
+                player = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
+                id_val = row.iloc[1]
+                if pd.isna(id_val):
                     continue
-            if player and discord_id and player.lower() not in ["player name", "playername"]:
-                mapping[player] = discord_id
-        save_cached_sheets(sheet_url, mapping)
-    except Exception as e:
-        logger.error(f"Error loading player mapping: {e}", exc_info=True)
+                try:
+                    discord_id = int(float(id_val))
+                except (ValueError, TypeError):
+                    id_str = str(id_val).strip()
+                    if id_str.isdigit():
+                        discord_id = int(id_str)
+                    else:
+                        continue
+                if player and discord_id and player.lower() not in ["player name", "playername"]:
+                    mapping[player] = discord_id
+            save_cached_sheets(sheet_url, mapping)
+        except Exception as e:
+            logger.error(f"Error loading player mapping: {e}", exc_info=True)
     return mapping
+
+
+async def load_player_mapping_async(sheet_url: str, force_refresh: bool = False,
+                                     timeout: float = DEFAULT_FETCH_TIMEOUT) -> dict:
+    return await asyncio.wait_for(
+        asyncio.to_thread(load_player_mapping, sheet_url, force_refresh),
+        timeout=timeout,
+    )
 
 
 
@@ -763,6 +902,84 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
         ranked.append([str(i), hero, str(played_int), str(pts_int)])
 
     return ranked, ["#", "Player", "Played", "Pts"]
+
+
+def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | None, int | None, int | None]:
+    """
+    Search every division sheet's standings for `hero_key` (a normalized
+    "player-hero" string, e.g. from get_player_characters). Returns
+    (division_name, rank, total_ranked) for the first division whose
+    standings list contains it — total_ranked is how many entries that
+    division's standings has, for display like "3rd out of 8" — or
+    (None, None, None) if it isn't ranked in any division yet (e.g.
+    registered but with no scored matches so far).
+    """
+    for sheet_name, df in sheets_dict.items():
+        if not is_division_sheet(df):
+            continue
+        rows, _ = get_division_standings(sheets_dict, sheet_name)
+        if not rows:
+            continue
+        for rank_str, hero, _played, _pts in rows:
+            if normalize_name(hero) == hero_key:
+                return sheet_name, int(rank_str), len(rows)
+    return None, None, None
+
+
+def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: str) -> tuple[int, int]:
+    """
+    Count (played, points) for `hero_key` (a normalized "player-hero" string)
+    across every week of `division_name`'s match schedule. A match counts as
+    played only if read_match_result says it's finished (both scores in 0/1/2
+    adding up to 2 — matches are best-of-two games). The "check" column is
+    intentionally NOT used — it's edited by hand and isn't reliable.
+
+    Each match awards the player their own score1/score2 value (0, 1, or 2 —
+    a 1-1 draw is possible, not just a binary win/loss), so `points` is a
+    sum, not a win count. Win% is `points / (played * 2)`, since 2 is the
+    max a player can earn per match.
+    """
+    played = 0
+    points = 0
+    target_sheet = None
+    for sheet_name in sheets_dict.keys():
+        if sheet_name.lower() == division_name.lower():
+            target_sheet = sheet_name
+            break
+    if not target_sheet:
+        return played, points
+    df = sheets_dict[target_sheet]
+
+    start_row = None
+    for idx, row in df.iterrows():
+        if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().startswith("Week"):
+            start_row = idx
+            break
+    if start_row is None:
+        return played, points
+
+    for idx in range(start_row, len(df)):
+        row = df.iloc[idx]
+        player1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+        player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+        if not player1 and not player2:
+            continue
+
+        is_p1 = normalize_name(player1) == hero_key
+        is_p2 = normalize_name(player2) == hero_key
+        if not (is_p1 or is_p2):
+            continue
+
+        result = read_match_result(row)
+        if not result["finished"]:
+            continue
+
+        played += 1
+        my_score = result["score1"] if is_p1 else result["score2"]
+        points += int(my_score)
+
+    return played, points
+
 
 # ------------------------------------------------------------
 # Auto-detect most recent week from tournament sheets

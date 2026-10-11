@@ -121,8 +121,8 @@ def test_build_pending_dm(sample_builds):
 
 @pytest.fixture
 def mock_sheets_ctx(sample_tournaments, sample_sheets):
-    """Patch get_tournament_sheets and get_division_matches."""
-    with patch('tournament_actions.get_tournament_sheets') as mock_get:
+    """Patch get_tournament_sheets_async and get_division_matches."""
+    with patch('tournament_actions.get_tournament_sheets_async') as mock_get:
         mock_get.return_value = sample_sheets
         with patch('tournament_actions.get_division_matches') as mock_matches:
             mock_matches.return_value = ([], [])   # no matches
@@ -161,7 +161,7 @@ async def test_run_post_divisions(sample_tournaments, mock_sheets_ctx):
 @pytest.mark.asyncio
 async def test_run_notify_all_empty_mapping(sample_tournaments, mock_sheets_ctx):
     channel = AsyncMockChannel()
-    with patch('tournament_actions.load_player_mapping', return_value={}):
+    with patch('tournament_actions.load_player_mapping_async', return_value={}):
         success, total = await run_notify_all(
             bot=MagicMock(),
             destination=channel,

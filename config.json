@@ -1,28 +1,17 @@
 {
+    "config_url":"https://drive.google.com/file/d/1su6h71enAIZSKKlCSOoLZ1tpob1b3YvP/view?usp=sharing",
     "tournaments": [
         {
             "name": "Echoes of Valor",
             "alias": "EoV",
-            "url": "https://docs.google.com/spreadsheets/d/19C1UHkmA7LroihS0C9IkjojU8UC6gSAyx2i_yncY0wk",
-            "builds_sheet": "hero builds Season 10",
+            "url": "https://docs.google.com/spreadsheets/d/1ZXWJm2Bnea1V7DWKKjXSxUmr0xvHMGDzXsidbHZvstE",
+            "builds_sheet": "hero builds Season 11",
             "builds_mapping": {
                 "player_col": 3,
                 "ancestry_col": 4,
                 "class_col": 5
             },
-            "season": 10
-        },
-        {
-            "name": "Meridian Ascension",
-            "alias": "MA",
-            "url": "https://docs.google.com/spreadsheets/d/1LFb1l-DxtJVYO2czMNAvRM9HxoWz01Z5FraA8Bg-X6c",
-            "builds_sheet": "Arma heroum - S3",
-            "builds_mapping": {
-                "player_col": 3,
-                "ancestry_col": 4,
-                "class_col": 5
-            },
-            "season": 3
+            "season": 11
         }
     ],
     "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",

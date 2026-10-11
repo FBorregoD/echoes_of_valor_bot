@@ -26,7 +26,10 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!matches` / `!m <player> [text]` — Player's matches as image (add `text` for plain text in DMs).\n"
                 "`!division` / `!d [division] [week] [text]` — Division matchups as image (add `text` in DMs for plain text).\n"
                 "`!standings` / `!c [tournament] [division] [text]` — Division standings as image (add `text` in DMs for plain text).\n"
-                "`!tournaments` — List available tournaments and their aliases."
+                "`!tournaments` — List available tournaments and their aliases.\n"
+                "`!subscribe` / `!sub <player> [text]` — DM-only. Get DM'd that player's matches automatically.\n"
+                "`!unsubscribe` / `!unsub` — DM-only. Remove all your subscriptions.\n"
+                "`!summary` / `!sum <player>` — DM-only. Show a player's characters and win/loss record per tournament."
             ),
             inline=False
         )
@@ -37,7 +40,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!notify_all [week]` — DM all players with pending matches.\n"
                 "`!post_divisions [week] [tournament]` — Post matchups to all division threads.\n"
                 "`!post_standings [tournament]` — Post standings to all division threads.\n"
-                "`!refresh` — Reload all cached Google Sheets data."
+                "`!refresh` — Reload all cached Google Sheets data.\n"
+                "`!show_sub` — DM-only. List every active !subscribe subscription."
             ),
             inline=False
         )
@@ -45,7 +49,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             name="🗓️ Admin — Scheduler",
             value=(
                 "`!schedule add <action> <when> [options]` — Create a recurring task.\n"
-                "`!schedule list` — List all scheduled tasks.\n"
+                "`!schedule list` — List scheduled tasks for this server.\n"
+                "`!schedule listall` — List scheduled tasks for every server (works in DMs).\n"
                 "`!schedule remove <id>` — Delete a task.\n"
                 "`!schedule remove all` — Delete every task for this server.\n"
                 "`!schedule remove tournament=<alias>` — Delete all tasks for that tournament.\n"
@@ -80,7 +85,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
     # ── Detailed command help ────────────────────────────────────────────────
     cmd = command_name.lstrip('!').lower()
     # Alias normalisation
-    cmd = {'m': 'matches', 'c': 'standings', 'd': 'division'}.get(cmd, cmd)
+    cmd = {'m': 'matches', 'c': 'standings', 'd': 'division',
+           'sub': 'subscribe', 'unsub': 'unsubscribe', 'sum': 'summary'}.get(cmd, cmd)
 
     help_texts = {
         'matches': (
@@ -118,6 +124,51 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "List all configured tournaments and their short aliases.",
             f"`{bot_mention} !tournaments`",
             "", ""
+        ),
+        'subscribe': (
+            "!subscribe / !sub",
+            "DM-only. Subscribe to a player — you'll be DM'd their matches (as if you'd run !m <player>), "
+            "followed by a !summary of the same player, automatically whenever an admin's "
+            "notify_subscribed_players task fires.",
+            f"`{bot_mention} !sub <player> [text]`",
+            (
+                f"`{bot_mention} !sub Scorium`\n"
+                f"`{bot_mention} !sub Scorium text`  — always DM as plain text instead of an image"
+            ),
+            "Only works in DMs, for any user. The player name is checked against each tournament's hero-builds "
+            "roster (not the !sendto mapping sheet, which only covers players who've linked a Discord ID) — if "
+            "it's not found you'll be told to check the spelling used when they registered; if it's found, the "
+            "confirmation shows exactly when you'll be notified (converted to GMT). **One active subscription per "
+            "user** — if you're already subscribed to someone, you'll be told to `!unsub` first, then `!sub` again "
+            "to switch."
+        ),
+        'unsubscribe': (
+            "!unsubscribe / !unsub",
+            "DM-only. Remove every player subscription for you.",
+            f"`{bot_mention} !unsub`",
+            "",
+            "Only works in DMs, for any user. Removes ALL of your subscriptions at once — there's no per-player unsubscribe."
+        ),
+        'summary': (
+            "!summary / !sum",
+            "DM-only. Show a player's characters and win/loss record, per tournament.",
+            f"`{bot_mention} !sum <player>`",
+            f"`{bot_mention} !sum Scorium`",
+            "Only works in DMs, for any user. For each tournament the player is registered in: one line per "
+            "character — division first, then the character's own name (no player name, that's you), "
+            "ancestry/class, ranking position (e.g. \"3rd out of 8\"), and matches played/points/win% — "
+            "followed by a totals line across all of that player's characters in that tournament. A match "
+            "counts as played only if `score1 + score2 == 2` (that's what marks a real completed result — "
+            "matches are best-of-two, so a valid result always sums to 2, a 1-1 draw included); the sheet's "
+            "\"check\" column is not used for this. Points are that 0-2 sum, not a binary win count — win% is "
+            "points / (played × 2). Text-only for now."
+        ),
+        'show_sub': (
+            "!show_sub",
+            "List every active !subscribe subscription: who's subscribed to whom.",
+            f"`{bot_mention} !show_sub`",
+            "",
+            "Requires admin, and only works in DMs. One comma-separated line per message, `Username → Player`."
         ),
         'sendto': (
             "!sendto",
@@ -181,10 +232,11 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         ),
         'schedule': (
             "!schedule",
-            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported).",
+            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported, notify_subscribed_players).",
             (
                 f"`{bot_mention} !schedule add <action> <when> [options]`\n"
                 f"`{bot_mention} !schedule list`\n"
+                f"`{bot_mention} !schedule listall`\n"
                 f"`{bot_mention} !schedule remove <id>`\n"
                 f"`{bot_mention} !schedule remove all`\n"
                 f"`{bot_mention} !schedule remove tournament=<alias>`\n"
@@ -201,9 +253,12 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "Requires admin.\n"
                 "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
                 "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
-                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`\n"
+                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`\n"
+                "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's "
+                "matches followed by a !summary of that player.\n"
                 "`standings` does not use `week` — it always posts current standings.\n"
-                "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament)."
+                "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
+                "`add`, `list`, `remove` and `info` only work inside a server; use `listall` to check tasks from a DM."
             )
         ),
     }

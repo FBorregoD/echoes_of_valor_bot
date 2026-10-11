@@ -9,6 +9,7 @@ from commands import setup as setup_commands
 from schedule_commands import setup_schedule
 from scheduler import SchedulerCog
 from channel_context import build_channel_index
+from remote_config import load_config
 
 # Logging setup
 logging.basicConfig(
@@ -21,9 +22,16 @@ logging.getLogger("discord.client").setLevel(logging.INFO)
 logging.getLogger("discord.http").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load configuration
-with open('config.json', 'r') as f:
-    config = json.load(f)
+# Load configuration — CONFIG_FILE lets a run point at a different config
+# file; production keeps using config.json by default.
+CONFIG_FILE = os.environ.get("CONFIG_FILE", "config.json")
+with open(CONFIG_FILE, 'r') as f:
+    local_config = json.load(f)
+logger.info(f"Loaded local config from {CONFIG_FILE}")
+
+# The effective config comes from local_config["config_url"] (remote JSON on
+# Google Drive) when set, falling back to the rest of the local file.
+config = load_config(local_config)
 
 TOURNAMENTS = config['tournaments']
 MAPPING_SHEET_URL = config['mapping_sheet_url']
@@ -84,6 +92,7 @@ def get_prefix(bot, message):
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 bot.remove_command('help')
 
+bot.config         = config  # read by commands.setup (image_scale)
 bot.admin_user_ids = ADMIN_USER_IDS
 bot.channel_index  = CHANNEL_INDEX
 

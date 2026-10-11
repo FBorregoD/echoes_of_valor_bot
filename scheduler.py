@@ -9,6 +9,11 @@ The loop fires tasks when their schedule matches:
 Auto-advancing week: if current_week is set (not NULL), it overrides
 params["week"] and increments by 1 after each successful run.
 current_week = -1 means the season is over and the task is skipped.
+Season-end is detected at the START of a fire (see _season_over): if
+current_week itself has no matches, that fire marks the task exhausted
+instead of posting. This is deliberately NOT done by peeking at next_week
+right after posting current_week, so the week that was just posted keeps
+counting as "current" (e.g. for !m) until the following fire finds nothing.
 
 Now also validates that the destination channel is allowed according to
 the bot's channel_index (the same restriction as for manual commands).
@@ -24,13 +29,14 @@ import sqlite3
 import json
 import logging
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord.ext import commands, tasks
 
-from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported
+from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported, find_tournament
+from match_utils import normalize_name, week_has_matches
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +58,11 @@ REGISTERED_ACTIONS = {
     },
     "report_misreported": {
     "description": "Send a DM report of all misreported matches to a specified user.",
-    "params": ["user_id", "tournament"],    
+    "params": ["user_id", "tournament"],
+    },
+    "notify_subscribed_players": {
+        "description": "DM every subscriber their subscribed player's matches (as !m <player> would show).",
+        "params": [],
     },
 }
 
@@ -97,6 +107,18 @@ def init_db():
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {col} {definition}")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                player     TEXT    NOT NULL,   -- as typed by the user, for display
+                player_key TEXT    NOT NULL,   -- normalize_name(player), for de-duping/lookup
+                text_flag  INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                UNIQUE(user_id)   -- at most one active subscription per user
+            )
+        """)
         conn.commit()
     logger.info(f"Scheduler DB initialised at {os.path.abspath(DB_PATH)}.")
 
@@ -139,6 +161,13 @@ def get_task(task_id: int) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
 
 
+def list_tasks_by_action(action: str) -> list[sqlite3.Row]:
+    with _get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM scheduled_tasks WHERE action = ? ORDER BY id", (action,)
+        ).fetchall()
+
+
 def update_last_run(task_id: int, ts: str):
     with _get_conn() as conn:
         conn.execute("UPDATE scheduled_tasks SET last_run = ? WHERE id = ?", (ts, task_id))
@@ -149,6 +178,54 @@ def update_current_week(task_id: int, week: int | None):
     with _get_conn() as conn:
         conn.execute("UPDATE scheduled_tasks SET current_week = ? WHERE id = ?", (week, task_id))
         conn.commit()
+
+
+# ── Subscriptions (!subscribe / !unsubscribe) ───────────────────────────────────
+
+def add_subscription(user_id: int, player: str, text_flag: bool) -> None:
+    """
+    Insert a subscription for user_id. Each user may have at most one active
+    subscription at a time — raises ValueError if they already have one
+    (the caller should tell them to !unsubscribe first). This also guards
+    against a race between two concurrent calls for the same user_id: only
+    one INSERT can win against the table's UNIQUE(user_id) constraint, the
+    other raises here too instead of silently overwriting.
+    """
+    player = player.strip()
+    if not player:
+        raise ValueError("player must not be empty")
+    with _get_conn() as conn:
+        existing = conn.execute(
+            "SELECT player FROM subscriptions WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f"user {user_id} is already subscribed to '{existing['player']}'")
+        try:
+            conn.execute(
+                """INSERT INTO subscriptions (user_id, player, player_key, text_flag, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, player, normalize_name(player), int(text_flag), datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError(f"user {user_id} is already subscribed to a player")
+
+
+def remove_all_subscriptions(user_id: int) -> int:
+    """Delete every subscription for user_id. Returns how many rows were removed."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def list_subscriptions(user_id: int | None = None) -> list[sqlite3.Row]:
+    with _get_conn() as conn:
+        if user_id is not None:
+            return conn.execute(
+                "SELECT * FROM subscriptions WHERE user_id = ? ORDER BY player", (user_id,)
+            ).fetchall()
+        return conn.execute("SELECT * FROM subscriptions ORDER BY user_id, player").fetchall()
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
@@ -163,6 +240,31 @@ def _format_interval(minutes: int) -> str:
     h, m = divmod(rem, 60)
     parts = [f"{d}d"] + ([f"{h}h"] if h else []) + ([f"{m}m"] if m else [])
     return "every " + " ".join(parts)
+
+
+def describe_schedule_gmt(row: sqlite3.Row) -> str:
+    """
+    Human-readable schedule description for user-facing messages (e.g. the
+    !subscribe confirmation), with weekly times converted to GMT/UTC so it
+    reads the same regardless of the task's configured timezone.
+    """
+    if row["interval_minutes"]:
+        return _format_interval(row["interval_minutes"])
+    if row["weekday"] is not None:
+        try:
+            tz = ZoneInfo(row["tz"])
+        except ZoneInfoNotFoundError:
+            tz = timezone.utc
+        # Anchor on the next occurrence of that weekday so DST is resolved
+        # the way it will actually be when the task next fires.
+        now = datetime.now(tz)
+        days_ahead = (row["weekday"] - now.weekday()) % 7
+        local_dt = (now + timedelta(days=days_ahead)).replace(
+            hour=row["hour"], minute=row["minute"], second=0, microsecond=0
+        )
+        utc_dt = local_dt.astimezone(timezone.utc)
+        return f"{WEEKDAY_NAMES[utc_dt.weekday()]} at {utc_dt.strftime('%H:%M')} GMT"
+    return f"daily at {row['hour']:02d}:{row['minute']:02d} GMT"
 
 
 def format_task(row: sqlite3.Row) -> str:
@@ -220,6 +322,60 @@ def _is_channel_allowed(guild: discord.Guild, channel: discord.TextChannel | dis
     base_name = base_channel.name.lower()
     by_name = guild_map.get("_by_name", {})
     return base_name in by_name
+
+
+async def _fetch_sheets_by_tourney(tournaments: list[dict]) -> dict:
+    """
+    Fetch every tournament's sheets concurrently (shared by the post_divisions
+    and notify_all auto-advance branches below). Failures are logged and
+    skipped rather than raised, matching the previous per-tournament
+    try/except behavior.
+    """
+    from match_utils import get_tournament_sheets_async
+    results = await asyncio.gather(
+        *(get_tournament_sheets_async(t['url'], force_refresh=False) for t in tournaments),
+        return_exceptions=True,
+    )
+    sheets_by_tourney = {}
+    for t, result in zip(tournaments, results):
+        if isinstance(result, Exception):
+            logger.warning(f"Could not refresh sheets for {t['name']}: {result}")
+            continue
+        sheets_by_tourney[t['name']] = result
+    return sheets_by_tourney
+
+
+async def _season_over(tournaments: list[dict], task_id: int, auto_week: int,
+                        destination, action: str) -> bool:
+    """
+    For auto-advancing tasks, check whether `auto_week` itself (the week
+    this fire is about to post/notify for) has any matches at all. If not,
+    this is the fire *after* the last real week — mark the task exhausted
+    and notify, instead of posting an empty result. Returns True if the
+    season was found over (caller should skip the action).
+
+    `tournaments` should be scoped to whatever the task actually covers
+    (e.g. just its own tournament for post_divisions) — passing every
+    configured tournament here means a shorter tournament's task won't be
+    declared over until *every* tournament in the list runs out of matches
+    for that week number, which is wrong when tournaments have different
+    season lengths.
+    """
+    sheets_by_tourney = await _fetch_sheets_by_tourney(tournaments)
+    has_matches = any(
+        week_has_matches(sheets, auto_week) for sheets in sheets_by_tourney.values()
+    )
+    if has_matches:
+        return False
+
+    update_current_week(task_id, -1)
+    await destination.send(
+        f"🏁 **Season complete!** No matches found for week {auto_week}. "
+        f"Scheduled task `{action}` (ID {task_id}) will no longer run automatically. "
+        f"Use `!schedule remove {task_id}` to clean it up if needed."
+    )
+    logger.info(f"Task {task_id}: no week {auto_week} — marked as exhausted.")
+    return True
 
 
 # ── Scheduler Cog ──────────────────────────────────────────────────────────────
@@ -325,6 +481,12 @@ class SchedulerCog(commands.Cog):
         cog = self.cog_ref
 
         if action == "post_divisions":
+            if auto_week is not None:
+                tourney = find_tournament(cog.tournaments, params.get("tournament", "MA"))
+                season_tournaments = [tourney] if tourney else cog.tournaments
+                if await _season_over(season_tournaments, task_id, auto_week, destination, action):
+                    return
+
             success, not_found, errors = await run_post_divisions(
                 destination=destination,
                 tournaments=cog.tournaments,
@@ -341,21 +503,20 @@ class SchedulerCog(commands.Cog):
             await destination.send(result)
 
             if auto_week is not None:
-                from match_utils import get_tournament_sheets
-                sheets_by_tourney = {}
-                for t in cog.tournaments:
-                    try:
-                        sheets_by_tourney[t['name']] = get_tournament_sheets(t['url'], force_refresh=False)
-                    except Exception:
-                        pass
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
-                    sheets_by_tourney=sheets_by_tourney,
                     destination=destination, action_name=action,
                     end_week=end_week,
                 )
 
         elif action == "notify_all":
+            # notify_all has no single "tournament" param — it DMs pending
+            # matches across every configured tournament (see run_notify_all),
+            # so season-over here is intentionally checked across all of them
+            # too, unlike post_divisions above which is scoped to its own task.
+            if auto_week is not None and await _season_over(cog.tournaments, task_id, auto_week, destination, action):
+                return
+
             success, total = await run_notify_all(
                 bot=self.bot,
                 destination=destination,
@@ -368,16 +529,8 @@ class SchedulerCog(commands.Cog):
             await destination.send(f"✅ DMs sent to {success}/{total} players.")
 
             if auto_week is not None:
-                from match_utils import get_tournament_sheets
-                sheets_by_tourney = {}
-                for t in cog.tournaments:
-                    try:
-                        sheets_by_tourney[t['name']] = get_tournament_sheets(t['url'], force_refresh=False)
-                    except Exception:
-                        pass
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
-                    sheets_by_tourney=sheets_by_tourney,
                     destination=destination, action_name=action,
                     end_week=end_week,
                 )
@@ -407,6 +560,32 @@ class SchedulerCog(commands.Cog):
                 logger.info(f"Task {task_id}: sent misreported report for {sent} tournaments.")
             if errors:
                 logger.warning(f"Task {task_id} errors: {', '.join(errors)}")
+
+        elif action == "notify_subscribed_players":
+            subs = list_subscriptions()
+            sent, failed = 0, 0
+            for row in subs:
+                try:
+                    user = await self.bot.fetch_user(row["user_id"])
+                    await cog._build_and_send_player_matches(
+                        user, row["player"], bool(row["text_flag"]),
+                        guild_id=None, context={'tournament': None},
+                    )
+                    await cog._build_and_send_player_summary(
+                        user, row["player"], context={'tournament': None},
+                    )
+                    sent += 1
+                except Exception as e:
+                    failed += 1
+                    logger.warning(
+                        f"Task {task_id}: notify_subscribed_players failed for "
+                        f"user {row['user_id']} / {row['player']}: {e}"
+                    )
+                await asyncio.sleep(0.5)
+            result = f"✅ Notified {sent} subscriber(s)."
+            if failed:
+                result += f" ⚠️ {failed} failed (DMs disabled or error)."
+            await destination.send(result)
 
         else:
             logger.warning(f"Task {task_id}: unknown action '{action}'.")
