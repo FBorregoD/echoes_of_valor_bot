@@ -10,16 +10,19 @@ from schedule_commands import setup_schedule
 from scheduler import SchedulerCog
 from channel_context import build_channel_index
 from remote_config import load_config
+from command_audit import log_command_start, log_command_finish, log_command_failure
 
-# Logging setup
+# Logging setup — INFO by default; set LOG_LEVEL=DEBUG to get the detailed
+# per-step output (week resolution, image rendering, HTTP requests) back.
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 # Silenciar logs excesivos de la librería discord.py
 logging.getLogger("discord.gateway").setLevel(logging.INFO)
 logging.getLogger("discord.client").setLevel(logging.INFO)
 logging.getLogger("discord.http").setLevel(logging.INFO)
+logging.getLogger("urllib3").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load configuration — CONFIG_FILE lets a run point at a different config
@@ -121,12 +124,22 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-    print(f"Content: '{message.content}' | author: {message.author} | channel: {message.channel}")
     await bot.process_commands(message)
 
 
 @bot.event
+async def on_command(ctx):
+    log_command_start(ctx)
+
+
+@bot.event
+async def on_command_completion(ctx):
+    log_command_finish(ctx)
+
+
+@bot.event
 async def on_command_error(ctx, error):
+    log_command_failure(ctx, error)
     if isinstance(error, commands.CheckFailure):
         await ctx.send(str(error) or "❌ You don't have permission to use this command.")
     elif isinstance(error, commands.MissingRequiredArgument):
