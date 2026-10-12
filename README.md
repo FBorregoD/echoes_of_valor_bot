@@ -147,9 +147,24 @@ The bot doesn't use the Google Sheets API — it fetches sheets as public CSV ex
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes* | The bot's Discord token. |
 | `CONFIG_FILE` | No | Path to the config file to load. Defaults to `config.json`. |
+| `LOG_LEVEL` | No | Logging level (`DEBUG`, `INFO`, `WARNING`, ...). Defaults to `INFO`; `DEBUG` adds per-step detail (week resolution, image rendering, HTTP requests). |
 | `RAILWAY_VOLUME_MOUNT_PATH` | No | Auto-set by Railway once a persistent volume is attached to the service. When present, `tasks.db` (the scheduler/subscriptions database) is stored there instead of the working directory, so it survives redeploys. Unset locally — `tasks.db` just lives in the repo root. |
 
 \* If `DISCORD_BOT_TOKEN` isn't set, the bot falls back to reading a token from `var/env.txt` (gitignored) — convenient for local dev, but the env var is what production (Railway) uses.
+
+## Monitoring commands
+
+Every command a user runs is logged by the `audit` logger (`command_audit.py`): one line when it starts (who, where — `DM` or `Server/#channel` — and the message) and one when it finishes or fails, with its duration. Ordinary chat messages are not logged. With Docker:
+
+```bash
+docker logs -f echoes-of-valor 2>&1 | grep audit
+```
+
+```
+[INFO] audit: fulano (123...) in DM: '!m scorium'
+[INFO] audit: fulano !matches done in 2.4s
+[INFO] audit: fulano '!mm scorium' failed (CommandNotFound) in DM
+```
 
 ## Running tests
 
