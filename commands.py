@@ -406,11 +406,29 @@ class TournamentCommands(commands.Cog):
             if not characters:
                 continue
 
+            # Lines are sorted by division (in the sheet's tab order, i.e. top
+            # division first, Unranked last), then by hero name.
+            division_order = [d.lower() for d in get_division_sheets(sheets)]
+
+            def sort_key(entry):
+                division = entry[1]
+                if not division:
+                    return (2, 0, "", entry[0]['hero_name'].lower())
+                pos = division.lower()
+                if pos in division_order:
+                    return (0, division_order.index(pos), "", entry[0]['hero_name'].lower())
+                return (1, 0, pos, entry[0]['hero_name'].lower())
+
+            entries = []
+            for char in characters:
+                division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
+                entries.append((char, division, rank, total_ranked))
+            entries.sort(key=sort_key)
+
             lines = [f"**🏆 {tourney['name']}**"]
             total_played = 0
             total_points = 0
-            for char in characters:
-                division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
+            for char, division, rank, total_ranked in entries:
                 played, points = get_player_division_record(sheets, division, char['hero_key']) if division else (0, 0)
                 total_played += played
                 total_points += points
@@ -419,12 +437,12 @@ class TournamentCommands(commands.Cog):
                 win_pct = f"{round(points / (played * 2) * 100)}%" if played else "—"
                 if division:
                     rank_part = f" — {_ordinal(rank)} out of {total_ranked}"
-                    div_label = division
+                    div_label = division.title()
                 else:
                     rank_part = ""
                     div_label = "Unranked"
                 lines.append(
-                    f"**{div_label}** — {char['hero_name']} ({build}){rank_part} — "
+                    f"**{char['hero_name'].upper()}** ({build}) — {div_label}{rank_part} — "
                     f"{played} played, {points} points ({win_pct})"
                 )
 
