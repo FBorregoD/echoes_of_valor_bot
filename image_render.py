@@ -83,6 +83,33 @@ TEXT_WHITE  = (255, 255, 255)
 CHECK_GREEN = (87, 242, 135)
 MISR_COLOR  = (220, 50, 50)          # for misreported matches
 
+# Division labels in !m images: a different blue per division so a player's
+# matches can be told apart at a glance. Ordered lightest (top division) to
+# deepest (bottom); divisions take them in the sheet's tab order.
+DIVISION_BLUES = [
+    (200, 230, 255),   # ice
+    (135, 206, 250),   # sky
+    ( 64, 196, 245),   # cyan
+    ( 80, 160, 255),   # azure
+    (110, 140, 250),   # cornflower
+    (140, 130, 255),   # periwinkle
+    ( 95, 110, 245),   # blurple
+    ( 70, 120, 220),   # steel
+]
+
+
+def division_color(division: str, division_order: list[str]) -> tuple:
+    """Blue for `division` by its position in `division_order` (the
+    tournament's division sheets, top first), spread across DIVISION_BLUES.
+    Unknown divisions fall back to ACCENT."""
+    names = [d.lower() for d in division_order]
+    if division.lower() not in names:
+        return ACCENT
+    i, n = names.index(division.lower()), len(names)
+    if n == 1:
+        return DIVISION_BLUES[0]
+    return DIVISION_BLUES[round(i * (len(DIVISION_BLUES) - 1) / (n - 1))]
+
 # ── Layout constants (scaled) ──────────────────────────────────────────────────
 def _s(val: int) -> int:
     return max(1, round(val * IMAGE_SCALE))
@@ -483,7 +510,7 @@ def render_player_matches(
 
     y = header_h
 
-    def draw_match_row(row_data, is_pending: bool, i: int, color=ORANGE):
+    def draw_match_row(row_data, is_pending: bool, i: int, division_order: list[str], color=ORANGE):
         nonlocal y
         draw.rectangle([0, y, width, y + row_h], fill=BG_ALT if i % 2 == 0 else BG)
         x = PAD()
@@ -504,7 +531,8 @@ def render_player_matches(
             finished = row_data[5] if len(row_data) > 5 else False
             div_y = _row_text_y(y, row_h)
 
-        draw.text((x + (div_col_w - _tw(draw, div, small)) // 2, div_y), div, font=small, fill=ACCENT)
+        draw.text((x + (div_col_w - _tw(draw, div, small)) // 2, div_y), div, font=small,
+                  fill=division_color(div, division_order))
         x += div_col_w
 
         vs_cx = x + max_p1 + COL_GAP() + vs_w // 2
@@ -548,25 +576,26 @@ def render_player_matches(
                  font=_f('bold', BASE()), fill=TEXT_WHITE)
         y += sec_h
 
+        division_order = t.get('division_order', [])
         if cur:
             _draw_section_header(draw, width, y, f"Week {week} matches", GOLD)
             y += SEC_H()
             for i, row in enumerate(cur):
-                draw_match_row(row, False, i)
+                draw_match_row(row, False, i, division_order)
             y += _s(2)
 
         if pend:
             _draw_section_header(draw, width, y, "Pending matches", ORANGE)
             y += SEC_H()
             for i, row in enumerate(pend):
-                draw_match_row(row, True, i, color=ORANGE)
+                draw_match_row(row, True, i, division_order, color=ORANGE)
             y += _s(2)
 
         if mis:
             _draw_section_header(draw, width, y, "Misreported matches", MISR_COLOR)
             y += SEC_H()
             for i, row in enumerate(mis):
-                draw_match_row(row, True, i, color=MISR_COLOR)
+                draw_match_row(row, True, i, division_order, color=MISR_COLOR)
             y += _s(2)
 
     draw.rectangle([0, h - _s(4), width, h], fill=ACCENT)

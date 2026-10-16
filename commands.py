@@ -30,7 +30,8 @@ from tournament_actions import (
     run_notify_all,
     get_threads_for_channel,
     send_division_image,
-    run_post_standings
+    run_post_standings,
+    get_division_sheets,
 )
 from channel_context import resolve_context, parse_division_args
 from image_render import render_standings, render_player_matches, set_scale
@@ -348,6 +349,7 @@ class TournamentCommands(commands.Cog):
                         'current': cur_rows,
                         'pending': pend_rows,
                         'misreported': mis_rows,
+                        'division_order': get_division_sheets(sheets),
                     })
             except Exception as e:
                 logger.error(f"_build_and_send_player_matches ({tourney['name']}): {e}", exc_info=True)
