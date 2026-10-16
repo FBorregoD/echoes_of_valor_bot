@@ -33,3 +33,21 @@ def test_render_player_matches():
     data = render_player_matches("Player1", results)
     assert isinstance(data, bytes)
     assert data[:8] == b'\x89PNG\r\n\x1a\n'
+
+def test_status_mark_for_current_week_matches():
+    from image_render import _status_mark, CHECK_GREEN, MISR_COLOR
+    assert _status_mark(True, False) == (" ✓", CHECK_GREEN)
+    assert _status_mark(False, True) == (" ⚠", MISR_COLOR)
+    assert _status_mark(False, False) is None
+
+
+def test_render_player_matches_with_misreported_current_match():
+    results = [{
+        'tourney_name': 'Test', 'week': 1, 'season_complete': False,
+        'current': [('Division', 'Player1', 'Build1', 'Player2', 'Build2', False, True),   # misreported
+                    ('Division', 'Player1', 'Build1', 'Player3', 'Build3', True, False),   # finished
+                    ('Division', 'Player1', 'Build1', 'Player4', 'Build4', False)],        # old 6-tuple
+        'pending': [], 'misreported': [],
+    }]
+    data = render_player_matches("Player1", results)
+    assert data[:8] == b'\x89PNG\r\n\x1a\n'

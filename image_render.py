@@ -173,6 +173,15 @@ def _draw_name_build(draw, x: int, y: int, name: str, build: str, two_line: bool
     nw = _tw(draw, name, _f('bold', BASE()))
     draw.text((x + nw + _s(4), y + _s(6)), f"({build})", font=_f('regular', BASE() - 1), fill=TEXT_BUILD)
 
+def _status_mark(finished: bool, misreported: bool) -> tuple[str, tuple] | None:
+    """End-of-row mark for a current-week match: ✓ if finished, ⚠ if its
+    result is misreported, nothing otherwise."""
+    if finished:
+        return " ✓", CHECK_GREEN
+    if misreported:
+        return " ⚠", MISR_COLOR
+    return None
+
 def _match_row_h(two_line: bool) -> int:
     return MATCH_ROW_H() if two_line else ROW_H()
 
@@ -270,7 +279,7 @@ def render_matchups(
             _draw_vs(draw, vs_cx, y, vs_w, row_h)
             _draw_name_build(draw, p2_x, y, p2n, p2b, two_line)
             if finished and not is_pending:
-                draw.text((p2_x + _cell_w(draw, p2n, p2b, two_line) + _s(4), _row_text_y(y, row_h)),
+                draw.text((p2_x + max_p2 + _s(4), _row_text_y(y, row_h)),
                           " ✓", font=_f('bold', BASE()), fill=CHECK_GREEN)
             y += row_h
         y += _s(4)
@@ -399,7 +408,7 @@ def render_player_matches(
           'tourney_name': str,
           'week': int,                    # week of this tournament
           'season_complete': bool,        # True if no more matches
-          'current': [(division, p1_name, p1_build, p2_name, p2_build, finished), ...],
+          'current': [(division, p1_name, p1_build, p2_name, p2_build, finished[, misreported]), ...],
           'pending': [(week_num, division, p1_name, p1_build, p2_name, p2_build), ...],
           'misreported': [...],
         }
@@ -468,8 +477,9 @@ def render_player_matches(
     check_w = 0
     for t in tourney_results:
         for r in t.get('current', []):
-            if len(r) > 5 and r[5]:
-                check_w = max(check_w, _tw(dd, " ✓", _f('bold', BASE())))
+            mark = _status_mark(len(r) > 5 and r[5], len(r) > 6 and r[6])
+            if mark:
+                check_w = max(check_w, _tw(dd, mark[0], _f('bold', BASE())))
     if check_w:
         row_w += check_w + _s(4)
     if not two_line and has_wk_rows:
@@ -517,7 +527,7 @@ def render_player_matches(
         small = _f('bold', BASE() - 1)
         if is_pending:
             div, p1n, p1b, p2n, p2b = row_data[1], row_data[2], row_data[3], row_data[4], row_data[5]
-            finished = False
+            finished = misreported = False
             wk = f"Wk {row_data[0]}"
             if two_line:
                 draw.text((x + (div_col_w - _tw(draw, wk, small)) // 2, y + _s(4)), wk, font=small, fill=color)
@@ -529,6 +539,7 @@ def render_player_matches(
         else:
             div, p1n, p1b, p2n, p2b = row_data[0], row_data[1], row_data[2], row_data[3], row_data[4]
             finished = row_data[5] if len(row_data) > 5 else False
+            misreported = row_data[6] if len(row_data) > 6 else False
             div_y = _row_text_y(y, row_h)
 
         draw.text((x + (div_col_w - _tw(draw, div, small)) // 2, div_y), div, font=small,
@@ -540,9 +551,10 @@ def render_player_matches(
         _draw_name_build(draw, x, y, p1n, p1b, two_line)
         _draw_vs(draw, vs_cx, y, vs_w, row_h)
         _draw_name_build(draw, p2_x, y, p2n, p2b, two_line)
-        if finished and not is_pending:
-            draw.text((p2_x + _cell_w(draw, p2n, p2b, two_line) + _s(4), _row_text_y(y, row_h)),
-                      " ✓", font=_f('bold', BASE()), fill=CHECK_GREEN)
+        mark = None if is_pending else _status_mark(finished, misreported)
+        if mark:
+            draw.text((p2_x + max_p2 + _s(4), _row_text_y(y, row_h)),
+                      mark[0], font=_f('bold', BASE()), fill=mark[1])
         y += row_h
 
     # Draw tournaments

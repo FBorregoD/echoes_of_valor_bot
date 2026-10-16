@@ -255,7 +255,7 @@ class TournamentCommands(commands.Cog):
                 if t['current']:
                     lines.append(f"**Week {week} matches:**")
                     for r in t['current']:
-                        status = " ✓" if r[5] else ""
+                        status = " ✓" if r[5] else (" ⚠️" if len(r) > 6 and r[6] else "")
                         lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) vs {r[3]} ({r[4]}){status}")
                 if t['pending']:
                     lines.append("\n**⏳ Pending matches:**")
@@ -328,7 +328,8 @@ class TournamentCommands(commands.Cog):
                 for m in current:
                     ph, opp = pick(m)
                     finished = bool(m.get('finished'))
-                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished))
+                    misreported = bool(m.get('misreported'))
+                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished, misreported))
 
                 normal_pend, misreported = self._split_pending(pending)
                 pend_rows = []
