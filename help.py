@@ -155,9 +155,10 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             f"`{bot_mention} !sum <player>`",
             f"`{bot_mention} !sum Scorium`",
             "Only works in DMs, for any user. For each tournament the player is registered in: one line per "
-            "character — division first, then the character's own name (no player name, that's you), "
-            "ancestry/class, ranking position (e.g. \"3rd out of 8\"), and matches played/points/win% — "
-            "followed by a totals line across all of that player's characters in that tournament. A match "
+            "character — the character's name in capitals (no player name, that's you), ancestry/class, "
+            "division, ranking position (e.g. \"3rd out of 8\"), and matches played/points/win%, sorted by "
+            "division (top division first, unranked last) and then by character name — followed by a "
+            "totals line across all of that player's characters in that tournament. A match "
             "counts as played only if `score1 + score2 == 2` (that's what marks a real completed result — "
             "matches are best-of-two, so a valid result always sums to 2, a 1-1 draw included); the sheet's "
             "\"check\" column is not used for this. Points are that 0-2 sum, not a binary win count — win% is "

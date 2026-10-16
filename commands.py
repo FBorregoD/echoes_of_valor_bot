@@ -30,7 +30,8 @@ from tournament_actions import (
     run_notify_all,
     get_threads_for_channel,
     send_division_image,
-    run_post_standings
+    run_post_standings,
+    get_division_sheets,
 )
 from channel_context import resolve_context, parse_division_args
 from image_render import render_standings, render_player_matches, set_scale
@@ -254,7 +255,7 @@ class TournamentCommands(commands.Cog):
                 if t['current']:
                     lines.append(f"**Week {week} matches:**")
                     for r in t['current']:
-                        status = " ✓" if r[5] else ""
+                        status = " ✓" if r[5] else (" ⚠️" if len(r) > 6 and r[6] else "")
                         lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) vs {r[3]} ({r[4]}){status}")
                 if t['pending']:
                     lines.append("\n**⏳ Pending matches:**")
@@ -327,7 +328,8 @@ class TournamentCommands(commands.Cog):
                 for m in current:
                     ph, opp = pick(m)
                     finished = bool(m.get('finished'))
-                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished))
+                    misreported = bool(m.get('misreported'))
+                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished, misreported))
 
                 normal_pend, misreported = self._split_pending(pending)
                 pend_rows = []
@@ -348,6 +350,7 @@ class TournamentCommands(commands.Cog):
                         'current': cur_rows,
                         'pending': pend_rows,
                         'misreported': mis_rows,
+                        'division_order': get_division_sheets(sheets),
                     })
             except Exception as e:
                 logger.error(f"_build_and_send_player_matches ({tourney['name']}): {e}", exc_info=True)
@@ -404,11 +407,29 @@ class TournamentCommands(commands.Cog):
             if not characters:
                 continue
 
+            # Lines are sorted by division (in the sheet's tab order, i.e. top
+            # division first, Unranked last), then by hero name.
+            division_order = [d.lower() for d in get_division_sheets(sheets)]
+
+            def sort_key(entry):
+                division = entry[1]
+                if not division:
+                    return (2, 0, "", entry[0]['hero_name'].lower())
+                pos = division.lower()
+                if pos in division_order:
+                    return (0, division_order.index(pos), "", entry[0]['hero_name'].lower())
+                return (1, 0, pos, entry[0]['hero_name'].lower())
+
+            entries = []
+            for char in characters:
+                division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
+                entries.append((char, division, rank, total_ranked))
+            entries.sort(key=sort_key)
+
             lines = [f"**🏆 {tourney['name']}**"]
             total_played = 0
             total_points = 0
-            for char in characters:
-                division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
+            for char, division, rank, total_ranked in entries:
                 played, points = get_player_division_record(sheets, division, char['hero_key']) if division else (0, 0)
                 total_played += played
                 total_points += points
@@ -417,12 +438,12 @@ class TournamentCommands(commands.Cog):
                 win_pct = f"{round(points / (played * 2) * 100)}%" if played else "—"
                 if division:
                     rank_part = f" — {_ordinal(rank)} out of {total_ranked}"
-                    div_label = division
+                    div_label = division.title()
                 else:
                     rank_part = ""
                     div_label = "Unranked"
                 lines.append(
-                    f"**{div_label}** — {char['hero_name']} ({build}){rank_part} — "
+                    f"**{char['hero_name'].upper()}** ({build}) — {div_label}{rank_part} — "
                     f"{played} played, {points} points ({win_pct})"
                 )
 

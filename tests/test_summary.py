@@ -111,14 +111,48 @@ async def test_summary_builds_character_and_total_lines():
 
     sent = "\n".join(c.args[0] for c in destination.send.call_args_list)
     assert "Echoes of Valor" in sent
-    # Division comes before the character name; no player name shown.
-    assert "**Diamond** — Mordek (Human Warlock) — 1st out of 2" in sent
+    # Hero name first (bold, upper case), then build, then division in Title case; no player name.
+    assert "**MORDEK** (Human Warlock) — Diamond — 1st out of 2" in sent
     assert "Samwise -" not in sent  # the "Player - Hero" display_name form must not leak in
     assert "3 played, 5 points (83%)" in sent
-    assert "**Unranked** — Fizzle (Gnome Tinkerer) —" in sent
-    assert "0 played, 0 points (—)" in sent
+    assert "**FIZZLE** (Gnome Tinkerer) — Unranked — 0 played, 0 points (—)" in sent
     # Total across both characters: 3 played, 5 points combined.
     assert "**Total:** 3 played, 5 points (83%)" in sent
+
+
+@pytest.mark.asyncio
+async def test_summary_lines_sorted_by_division_order_then_hero():
+    """Divisions in the sheet's tab order (top first), Unranked last; heroes
+    alphabetically within a division — regardless of roster order."""
+    cog = _make_cog([{"name": "Echoes of Valor", "alias": "EoV", "url": "fake_eov",
+                       "builds_sheet": "hero builds", "builds_mapping": {}}])
+    destination = MagicMock()
+    destination.send = AsyncMock()
+
+    def char(hero):
+        return {"hero_key": f"tuff-{hero.lower()}", "display_name": f"Tuff - {hero}",
+                "hero_name": hero, "ancestry": "Elf", "class": "Bard"}
+
+    characters = [char("Zed"), char("Unplaced"), char("Bruno"), char("Alpha"), char("Mildagas")]
+    divisions = {"tuff-zed": "COPPER", "tuff-bruno": "GALLIUM", "tuff-alpha": "COPPER",
+                 "tuff-mildagas": "DIAMOND"}
+
+    def fake_rank(sheets, hero_key):
+        div = divisions.get(hero_key)
+        return (div, 1, 8) if div else (None, None, None)
+
+    with patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.get_player_characters", return_value=characters), \
+         patch("commands.get_division_sheets", return_value=["DIAMOND", "GALLIUM", "COPPER"]), \
+         patch("commands.find_player_division_rank", side_effect=fake_rank), \
+         patch("commands.get_player_division_record", return_value=(1, 2)):
+        await cog._build_and_send_player_summary(destination, "Tuff", context={'tournament': None})
+
+    sent = "\n".join(c.args[0] for c in destination.send.call_args_list)
+    heroes = [line.split("**")[1] for line in sent.splitlines() if line.startswith("**") and "Total" not in line
+              and "🏆" not in line]
+    assert heroes == ["MILDAGAS", "BRUNO", "ALPHA", "ZED", "UNPLACED"]
+    assert "— Copper —" in sent and "— Gallium —" in sent
 
 
 @pytest.mark.asyncio
