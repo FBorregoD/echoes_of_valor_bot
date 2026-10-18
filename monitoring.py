@@ -4,6 +4,7 @@ Both only work in DMs and only for bot admins. Usage data comes from the
 command_usage table (tasks.db), filled by command_audit for every command a
 user runs; scheduled tasks don't count as usage.
 """
+import json
 import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -159,7 +160,9 @@ def build_status(bot, now: datetime | None = None) -> str:
     for row in tasks:
         cw = row["current_week"]
         week = "" if cw is None else (" · season over" if cw == -1 else f" · next week {cw}")
-        lines.append(f"`{row['id']}` {row['action']} — {describe_schedule_gmt(row)}{week}")
+        tournament = json.loads(row["params"] or "{}").get("tournament")
+        action = f"{row['action']} **{tournament}**" if tournament else row["action"]
+        lines.append(f"`{row['id']}` {action} — {describe_schedule_gmt(row)}{week}")
 
     lines.append(f"\n**Subscriptions:** {len(list_subscriptions())}")
 

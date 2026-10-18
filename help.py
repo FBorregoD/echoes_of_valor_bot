@@ -181,7 +181,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "",
             "Requires admin, and only works in DMs. Shows uptime, latency and the last disconnect, whether "
             "the config was loaded from Google Drive or from the local fallback file, the loaded tournaments, "
-            "every scheduled task with its schedule and next week, the number of subscriptions, and how many "
+            "every scheduled task with its tournament (if it has one), schedule and next week, the number of "
+            "subscriptions, and how many "
             "commands users have run since the bot started (and how many failed)."
         ),
         'usage_report': (

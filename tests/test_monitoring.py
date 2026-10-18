@@ -129,7 +129,8 @@ def test_status_reports_uptime_config_tasks_and_usage(temp_db):
     assert "online 2d 4h" in status
     assert "Latency: 120 ms · no disconnects since start" in status
     assert "Config: Google Drive ✅ · tournaments: EoV S11 · 3 servers configured" in status
-    assert "**Scheduled tasks:** 1" in status and "post_divisions" in status and "next week 3" in status
+    assert "**Scheduled tasks:** 1" in status
+    assert "post_divisions **EoV** — " in status and "next week 3" in status
     assert "**Subscriptions:** 0" in status
     assert "**Commands since start:** 2 (1 failed)" in status
 
@@ -250,3 +251,13 @@ def test_scheduler_dispatch_passes_others_flag(temp_db):
         send.assert_awaited_once_with(cog.bot, 30, exclude_recipient=True)
         asyncio.run(cog._dispatch("usage_report", MagicMock(), {}, 1, None))
         send.assert_awaited_with(cog.bot, 7, exclude_recipient=False)
+
+
+def test_status_shows_tournament_only_for_tasks_that_have_one(temp_db):
+    common = dict(guild_id=1, channel_id=2, thread_id=None, weekday=4, hour=8, minute=0,
+                  tz="Europe/Madrid", created_by=10)
+    scheduler.add_task(action="standings", params={"tournament": "MA"}, **common)
+    scheduler.add_task(action="notify_subscribed_players", params={}, **common)
+    status = build_status(_fake_bot(), now=NOW)
+    assert "standings **MA** — " in status
+    assert "notify_subscribed_players — " in status
