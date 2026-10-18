@@ -83,10 +83,11 @@ def parse_config(payload) -> dict:
 
     if "guild_channels" in payload:
         _validate_guild_channels(payload["guild_channels"])
-    if "admin_user_ids" in payload:
-        admins = payload["admin_user_ids"]
-        if not isinstance(admins, list) or not all(_is_int(a) for a in admins):
-            raise ValueError("'admin_user_ids' must be a list of integer Discord IDs")
+    for key in ("admin_user_ids", "alert_user_ids"):
+        if key in payload:
+            ids = payload[key]
+            if not isinstance(ids, list) or not all(_is_int(i) for i in ids):
+                raise ValueError(f"'{key}' must be a list of integer Discord IDs")
     if "command_prefix" in payload:
         prefix = payload["command_prefix"]
         if not isinstance(prefix, str) or not prefix:
@@ -119,12 +120,24 @@ def fetch_remote_config(url: str, timeout: float = REMOTE_FETCH_TIMEOUT) -> dict
     return parse_config(payload)
 
 
+CONFIG_SOURCE_REMOTE = "remote"
+CONFIG_SOURCE_LOCAL = "local"
+CONFIG_SOURCE_FALLBACK = "local (remote failed)"
+
+
 def load_config(local_config: dict) -> dict:
     """Return the effective config: the remote one when "config_url" is set,
     otherwise (or if the remote one can't be loaded) the local one."""
+    return load_config_with_source(local_config)[0]
+
+
+def load_config_with_source(local_config: dict) -> tuple[dict, str]:
+    """Like load_config, but also says where the config came from:
+    CONFIG_SOURCE_REMOTE, CONFIG_SOURCE_LOCAL (no config_url) or
+    CONFIG_SOURCE_FALLBACK (config_url set but the download/validation failed)."""
     remote_url = local_config.get("config_url")
     if not remote_url:
-        return parse_config(local_config)
+        return parse_config(local_config), CONFIG_SOURCE_LOCAL
 
     try:
         config = fetch_remote_config(remote_url)
@@ -133,7 +146,7 @@ def load_config(local_config: dict) -> dict:
             f"({len(config['tournaments'])} tournament(s), "
             f"{len(config.get('guild_channels', []))} guild(s))"
         )
-        return config
+        return config, CONFIG_SOURCE_REMOTE
     except (requests.RequestException, ValueError) as remote_error:
         try:
             config = parse_config(local_config)
@@ -146,4 +159,4 @@ def load_config(local_config: dict) -> dict:
             f"Could not load config from {remote_url} ({remote_error}); "
             "falling back to the local config."
         )
-        return config
+        return config, CONFIG_SOURCE_FALLBACK

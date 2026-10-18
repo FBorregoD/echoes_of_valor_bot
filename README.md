@@ -37,6 +37,8 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!post_standings [tournament]` | Post standings to every division thread. |
 | `!refresh` | Clear and reload all cached Google Sheets data. |
 | `!show_sub` | **DM-only.** List every active `!subscribe` subscription (`Username → Player`). |
+| `!status` | **DM-only.** Bot health: uptime, last disconnect, config source (Drive or local fallback), scheduled tasks, subscriptions, commands since start. |
+| `!usage_report` / `!us [days\|all] [others]` | **DM-only.** Command usage over the last N days (default 7; `others` leaves out your own commands): uses, average time and % that downloaded the sheet per command, unused commands, top users, DM vs server, failures. |
 
 ### Admin — scheduler
 
@@ -49,7 +51,7 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!schedule info <id>` | Show a task's details. |
 | `!schedule actions` | List available scheduled actions and their parameters. |
 
-`<when>` is either a weekday + time (`monday 09:00 tz=Europe/Madrid`) or an interval (`every=2h`, `every=30m`, `every=1d`). Available actions: `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`.
+`<when>` is either a weekday + time (`monday 09:00 tz=Europe/Madrid`) or an interval (`every=2h`, `every=30m`, `every=1d`). Available actions: `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`, `usage_report` (DMs the `!usage_report` of the last `days=N` days to the alert list — never posted in the channel).
 
 ```
 !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4
@@ -101,6 +103,7 @@ python main.py
   "default_week": 2,
   "command_prefix": "!",
   "admin_user_ids": [123456789012345678],
+  "alert_user_ids": [123456789012345678],
   "image_scale": 1.0,
   "guild_channels": [
     {
@@ -118,6 +121,7 @@ python main.py
 - **`config_url`** *(optional)* — a JSON file (e.g. on Google Drive, shared as "Anyone with the link can view") holding the **full** configuration, with exactly the same structure as this file. When set, the bot loads it **at startup** and uses it *instead of* everything else in the local `config.json` (nothing is merged) — so tournaments, channels, admins, prefixes, etc. can all be changed without a code push, just a bot restart. If the download fails or the remote file is invalid (missing tournament keys, `admin_user_ids` written as text instead of numbers, empty prefix, ...), the bot logs a warning with the reason and falls back to the rest of the local `config.json`; if that isn't a usable config either, it refuses to start. Keep the local copy reasonably in sync so the fallback is sensible.
 - **`tournaments`** — one entry per tournament (each needs `name`, `alias`, `url`, `builds_sheet`, `builds_mapping`, `season`). `url` is the tournament's Google Sheet (division sheets are auto-detected by looking for a `SCHEDULE` marker). `builds_sheet`/`builds_mapping` point at the hero-builds/roster sheet used for build lookups and to validate `!subscribe`.
 - **`mapping_sheet_url`** — a separate sheet of `player name → Discord ID`, used only by `!sendto`/`!notify_all`/`!test_map`/`!test_id` to DM a specific player. Not the tournament roster (that's the builds sheet above).
+- **`alert_user_ids`** *(optional)* — Discord user IDs that receive the scheduled `usage_report` DM. Defaults to `admin_user_ids` when missing.
 - **`guild_channels`** — per-server channel-to-tournament binding and an optional per-server prefix override (falls back to the top-level `command_prefix`). A channel with `"tournament": null` is treated as a neutral/admin channel.
 
 ## Google Sheet format
@@ -165,6 +169,13 @@ docker logs -f echoes-of-valor 2>&1 | grep audit
 [INFO] audit: fulano !matches done in 2.4s
 [INFO] audit: fulano '!mm scorium' failed (CommandNotFound) in DM
 ```
+
+Each of those commands is also stored in the `command_usage` table of `tasks.db` (time, user, command, DM or server, success/error, duration, and how many Google Sheets downloads it needed — 0 means it was served from the 5-minute cache). Admins can read it from Discord, by DM:
+
+- `!status` — uptime, latency and last disconnect, where the config came from, scheduled tasks, subscriptions, commands since start.
+- `!usage_report` / `!us [days|all] [others]` — `others` leaves out your own commands; which commands are used and which never are, by whom, how fast (cache vs download), failures and mistyped commands.
+
+`!schedule add usage_report monday 09:00 tz=Europe/Madrid days=7 others=yes` sends the report automatically each week to the users in `alert_user_ids` (falls back to `admin_user_ids`); with `others=yes` each of them gets it without their own commands.
 
 ## Running tests
 

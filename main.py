@@ -5,12 +5,16 @@ import os
 import logging
 import pathlib
 import asyncio
+from datetime import datetime, timezone
 from commands import setup as setup_commands
 from schedule_commands import setup_schedule
 from scheduler import SchedulerCog
 from channel_context import build_channel_index
-from remote_config import load_config
-from command_audit import log_command_start, log_command_finish, log_command_failure
+from remote_config import load_config_with_source
+from command_audit import (
+    log_command_start, log_command_finish, log_command_failure, start_sheet_fetch_tracking,
+)
+from monitoring import MonitoringCog
 
 # Logging setup — INFO by default; set LOG_LEVEL=DEBUG to get the detailed
 # per-step output (week resolution, image rendering, HTTP requests) back.
@@ -34,7 +38,7 @@ logger.info(f"Loaded local config from {CONFIG_FILE}")
 
 # The effective config comes from local_config["config_url"] (remote JSON on
 # Google Drive) when set, falling back to the rest of the local file.
-config = load_config(local_config)
+config, CONFIG_SOURCE = load_config_with_source(local_config)
 
 TOURNAMENTS = config['tournaments']
 MAPPING_SHEET_URL = config['mapping_sheet_url']
@@ -95,9 +99,17 @@ def get_prefix(bot, message):
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 bot.remove_command('help')
 
-bot.config         = config  # read by commands.setup (image_scale)
+bot.config         = config  # read by commands.setup (image_scale) and !status
+bot.config_source  = CONFIG_SOURCE
 bot.admin_user_ids = ADMIN_USER_IDS
 bot.channel_index  = CHANNEL_INDEX
+# For !status: when the bot first came online, and the latest outage as
+# (disconnected_at, reconnected_at) in UTC.
+bot.started_at      = None
+bot.last_outage     = None
+bot.disconnected_at = None
+
+bot.before_invoke(start_sheet_fetch_tracking)
 
 
 def is_bot_admin():
@@ -113,10 +125,30 @@ def is_bot_admin():
 bot.is_bot_admin = is_bot_admin
 
 
+def _note_reconnected():
+    if bot.disconnected_at is not None:
+        bot.last_outage = (bot.disconnected_at, datetime.now(timezone.utc))
+        bot.disconnected_at = None
+
+
 @bot.event
 async def on_ready():
+    if bot.started_at is None:
+        bot.started_at = datetime.now(timezone.utc)
+    _note_reconnected()
     logger.info(f"Bot online as {bot.user} (ID: {bot.user.id})")
     logger.info(f"Registered commands: {[c.name for c in bot.commands]}")
+
+
+@bot.event
+async def on_disconnect():
+    if bot.disconnected_at is None:
+        bot.disconnected_at = datetime.now(timezone.utc)
+
+
+@bot.event
+async def on_resumed():
+    _note_reconnected()
 
 
 
@@ -160,6 +192,7 @@ async def main():
         )
         await setup_schedule(bot)
         await bot.add_cog(SchedulerCog(bot, tournament_cog))
+        await bot.add_cog(MonitoringCog(bot))
         await bot.start(BOT_TOKEN)
 
 

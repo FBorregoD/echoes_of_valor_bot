@@ -41,7 +41,9 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!post_divisions [week] [tournament]` — Post matchups to all division threads.\n"
                 "`!post_standings [tournament]` — Post standings to all division threads.\n"
                 "`!refresh` — Reload all cached Google Sheets data.\n"
-                "`!show_sub` — DM-only. List every active !subscribe subscription."
+                "`!show_sub` — DM-only. List every active !subscribe subscription.\n"
+                "`!status` — DM-only. Bot health: uptime, config source, scheduled tasks, usage since start.\n"
+                "`!usage_report` / `!us [days|all] [others]` — DM-only. Which commands are used, by whom, how fast."
             ),
             inline=False
         )
@@ -86,7 +88,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
     cmd = command_name.lstrip('!').lower()
     # Alias normalisation
     cmd = {'m': 'matches', 'c': 'standings', 'd': 'division',
-           'sub': 'subscribe', 'unsub': 'unsubscribe', 'sum': 'summary'}.get(cmd, cmd)
+           'sub': 'subscribe', 'unsub': 'unsubscribe', 'sum': 'summary',
+           'us': 'usage_report'}.get(cmd, cmd)
 
     help_texts = {
         'matches': (
@@ -171,6 +174,33 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "",
             "Requires admin, and only works in DMs. One comma-separated line per message, `Username → Player`."
         ),
+        'status': (
+            "!status",
+            "Bot health at a glance.",
+            f"`{bot_mention} !status`",
+            "",
+            "Requires admin, and only works in DMs. Shows uptime, latency and the last disconnect, whether "
+            "the config was loaded from Google Drive or from the local fallback file, the loaded tournaments, "
+            "every scheduled task with its schedule and next week, the number of subscriptions, and how many "
+            "commands users have run since the bot started (and how many failed)."
+        ),
+        'usage_report': (
+            "!usage_report / !us",
+            "Which commands are used, by whom, and how fast.",
+            (
+                f"`{bot_mention} !usage_report [days|all] [others]`\n"
+                f"`{bot_mention} !us [days|all] [others]`"
+            ),
+            f"`{bot_mention} !us 30`\n`{bot_mention} !us all others`",
+            "Requires admin, and only works in DMs. Default: last 7 days; `all` for the whole history; "
+            "`others` leaves out your own commands (e.g. your testing), so you only see what everyone else does. "
+            "Per command: uses, average time and the % of uses that had to download the sheet (instead of "
+            "using the 5-minute cache). Also lists commands nobody used, the top users, DM vs server use, "
+            "cache vs download speed, and failures including mistyped commands. Scheduled tasks don't count. "
+            "Can be sent automatically with `!schedule add usage_report monday 09:00 tz=Europe/Madrid days=7 others=yes` "
+            "— it's DMed to the admins in the config's `alert_user_ids` (or `admin_user_ids`), never posted "
+            "in the channel."
+        ),
         'sendto': (
             "!sendto",
             "Send a player their match schedule by DM.",
@@ -233,7 +263,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         ),
         'schedule': (
             "!schedule",
-            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported, notify_subscribed_players).",
+            "Manage recurring scheduled tasks (post_divisions, notify_all, standings, report_misreported, notify_subscribed_players, usage_report).",
             (
                 f"`{bot_mention} !schedule add <action> <when> [options]`\n"
                 f"`{bot_mention} !schedule list`\n"
@@ -254,10 +284,13 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "Requires admin.\n"
                 "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
                 "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
-                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`\n"
+                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`, `usage_report`\n"
                 "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's "
                 "matches followed by a !summary of that player.\n"
                 "`standings` does not use `week` — it always posts current standings.\n"
+                "`usage_report` takes `days` (default 7) and `others=yes` (each admin gets it without their "
+                "own commands), and DMs the !usage_report to the admins in `alert_user_ids` (or "
+                "`admin_user_ids`) — nothing is posted in the channel.\n"
                 "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
                 "`add`, `list`, `remove` and `info` only work inside a server; use `listall` to check tasks from a DM."
             )
