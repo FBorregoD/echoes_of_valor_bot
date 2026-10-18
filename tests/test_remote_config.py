@@ -185,3 +185,21 @@ def test_remote_failure_with_bootstrap_only_local_raises(fake_get):
     fake_get["exc"] = requests.ConnectionError("down")
     with pytest.raises(RuntimeError, match="local fallback config is not usable"):
         load_config({"config_url": "https://x/config.json"})
+
+
+# ---------- alert_user_ids / config source ----------
+
+def test_parse_rejects_bad_alert_user_ids():
+    with pytest.raises(ValueError, match="alert_user_ids"):
+        parse_config(_config(alert_user_ids=["254177975417700352"]))
+    assert parse_config(_config(alert_user_ids=[1, 2]))["alert_user_ids"] == [1, 2]
+
+
+def test_load_config_with_source(fake_get):
+    from remote_config import (load_config_with_source, CONFIG_SOURCE_LOCAL,
+                               CONFIG_SOURCE_REMOTE, CONFIG_SOURCE_FALLBACK)
+    assert load_config_with_source(_config())[1] == CONFIG_SOURCE_LOCAL
+    fake_get["response"] = FakeResponse(json.dumps(REMOTE).encode())
+    assert load_config_with_source(LOCAL) == (REMOTE, CONFIG_SOURCE_REMOTE)
+    fake_get["response"], fake_get["exc"] = None, requests.ConnectionError("down")
+    assert load_config_with_source(LOCAL) == (LOCAL, CONFIG_SOURCE_FALLBACK)

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import re
 import threading
 import time
@@ -24,6 +25,19 @@ _memory_cache: dict[str, tuple] = {}
 # entry wait for a single in-flight fetch instead of stampeding Google Sheets.
 _fetch_locks: dict[str, threading.Lock] = {}
 _fetch_locks_guard = threading.Lock()
+
+
+# Per-command count of real Google Sheets downloads (cache misses). A command
+# sets this to a one-item list before it runs (command_audit); asyncio.to_thread
+# copies the context, so fetches made in worker threads still count. None
+# outside commands (scheduled tasks), where nothing is counted.
+sheet_fetch_counter: contextvars.ContextVar = contextvars.ContextVar("sheet_fetch_counter", default=None)
+
+
+def _note_sheet_fetch() -> None:
+    counter = sheet_fetch_counter.get()
+    if counter is not None:
+        counter[0] += 1
 
 
 def _get_fetch_lock(url: str) -> threading.Lock:
@@ -64,6 +78,7 @@ def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
                 return cached
 
         logger.info(f"Fetching sheets from: {tournament_url}")
+        _note_sheet_fetch()
         max_retries = 2
         delay = 1  # segundos
         for attempt in range(max_retries):
@@ -730,6 +745,7 @@ def load_player_mapping(sheet_url: str, force_refresh: bool = False) -> dict:
             cached = load_cached_sheets(sheet_url)
             if cached is not None and isinstance(cached, dict):
                 return cached
+        _note_sheet_fetch()
         try:
             sheets = ggx.data_fromAllSheets(sheet_url)
             if not sheets:

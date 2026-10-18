@@ -64,6 +64,11 @@ REGISTERED_ACTIONS = {
         "description": "DM every subscriber their subscribed player's matches (as !m <player> would show).",
         "params": [],
     },
+    "usage_report": {
+        "description": "DM the !usage_report of the last `days` days (default 7) to the bot admins "
+                       "(alert_user_ids); others=yes leaves out each admin's own commands.",
+        "params": ["days", "others"],
+    },
 }
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -117,6 +122,22 @@ def init_db():
                 text_flag  INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT,
                 UNIQUE(user_id)   -- at most one active subscription per user
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS command_usage (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts            TEXT    NOT NULL,   -- ISO timestamp (UTC) when the command started
+                user_id       INTEGER NOT NULL,
+                user_name     TEXT    NOT NULL,
+                command       TEXT    NOT NULL,   -- qualified name, '?' if it isn't a command
+                invoked_as    TEXT,               -- word the user typed (alias or unknown command)
+                location      TEXT    NOT NULL,   -- 'DM' or the server name
+                success       INTEGER NOT NULL,
+                error         TEXT,               -- exception class name when it failed
+                duration_ms   INTEGER,
+                sheet_fetches INTEGER             -- Google Sheets downloads (0 = served from cache)
             )
         """)
         conn.commit()
@@ -226,6 +247,34 @@ def list_subscriptions(user_id: int | None = None) -> list[sqlite3.Row]:
                 "SELECT * FROM subscriptions WHERE user_id = ? ORDER BY player", (user_id,)
             ).fetchall()
         return conn.execute("SELECT * FROM subscriptions ORDER BY user_id, player").fetchall()
+
+
+# ── Command usage (!usage_report / !status) ─────────────────────────────────────
+
+def record_command_usage(*, ts: datetime, user_id: int, user_name: str, command: str,
+                         invoked_as: str | None, location: str, success: bool,
+                         error: str | None, duration_ms: int | None,
+                         sheet_fetches: int | None) -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO command_usage
+               (ts, user_id, user_name, command, invoked_as, location, success,
+                error, duration_ms, sheet_fetches)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts.isoformat(), user_id, user_name, command, invoked_as, location,
+             int(success), error, duration_ms, sheet_fetches)
+        )
+        conn.commit()
+
+
+def list_command_usage(since: datetime | None = None) -> list[sqlite3.Row]:
+    """Usage rows, oldest first; only those at or after `since` if given."""
+    with _get_conn() as conn:
+        if since is None:
+            return conn.execute("SELECT * FROM command_usage ORDER BY ts").fetchall()
+        return conn.execute(
+            "SELECT * FROM command_usage WHERE ts >= ? ORDER BY ts", (since.isoformat(),)
+        ).fetchall()
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
@@ -586,6 +635,17 @@ class SchedulerCog(commands.Cog):
             if failed:
                 result += f" ⚠️ {failed} failed (DMs disabled or error)."
             await destination.send(result)
+
+        elif action == "usage_report":
+            # Admin-only data: DMed to the alert list, never posted in the channel.
+            from monitoring import send_usage_report, parse_days
+            try:
+                days = parse_days(params.get("days"))
+            except ValueError:
+                days = 7
+            others = str(params.get("others", "no")).lower() in ("yes", "true", "1")
+            sent, failed = await send_usage_report(self.bot, days, exclude_recipient=others)
+            logger.info(f"Task {task_id}: usage report sent to {sent} admin(s), {failed} failed.")
 
         else:
             logger.warning(f"Task {task_id}: unknown action '{action}'.")
