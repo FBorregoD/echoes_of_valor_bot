@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from commands import setup as setup_commands
 from schedule_commands import setup_schedule
 from scheduler import SchedulerCog
-from channel_context import build_channel_index
+from channel_context import build_channel_index, normalize_prefix_override, resolve_base_prefix
 from remote_config import load_config_with_source
 from command_audit import (
     log_command_start, log_command_finish, log_command_failure, start_sheet_fetch_tracking,
@@ -73,12 +73,21 @@ BOT_TOKEN = _load_token()
 intents = discord.Intents.default()
 intents.message_content = True
 
+# Local development only — never set on the production host. The dev bot and
+# the production bot share the test servers and load the same config, so both
+# would answer the same prefix there; PREFIX_OVERRIDE (e.g. "dev") makes this
+# bot answer that prefix instead in every server. DMs keep the normal prefix.
+PREFIX_OVERRIDE = normalize_prefix_override(os.environ.get("PREFIX_OVERRIDE"))
+if PREFIX_OVERRIDE:
+    logger.warning(f"PREFIX_OVERRIDE active: in servers this bot only answers '{PREFIX_OVERRIDE}'")
+
+
 def get_prefix(bot, message):
     # 1. Determinar el prefijo base (personalizado por guild o global)
-    base_prefix = COMMAND_PREFIX
-    if message.guild is not None:
-        guild_index = CHANNEL_INDEX.get(message.guild.id, {})
-        base_prefix = guild_index.get("_prefix", COMMAND_PREFIX)
+    base_prefix = resolve_base_prefix(
+        message.guild.id if message.guild is not None else None,
+        CHANNEL_INDEX, COMMAND_PREFIX, PREFIX_OVERRIDE,
+    )
 
     # 2. Construir los posibles formatos de mención
     mention_prefixes = [f"<@{bot.user.id}> ", f"<@!{bot.user.id}> "]

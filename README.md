@@ -151,6 +151,7 @@ The bot doesn't use the Google Sheets API — it fetches sheets as public CSV ex
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes* | The bot's Discord token. |
 | `CONFIG_FILE` | No | Path to the config file to load. Defaults to `config.json`. |
+| `PREFIX_OVERRIDE` | No | **Local dev bot only — never set on the production host.** The dev and production bots share the test servers and load the same config, so both would answer the same prefix there. With e.g. `PREFIX_OVERRIDE=dev` this bot answers `dev ...` in every server instead (a trailing space is added to word prefixes); DMs keep the normal prefix. A warning is logged at startup when it's active. |
 | `LOG_LEVEL` | No | Logging level (`DEBUG`, `INFO`, `WARNING`, ...). Defaults to `INFO`; `DEBUG` adds per-step detail (week resolution, image rendering, HTTP requests). |
 | `RAILWAY_VOLUME_MOUNT_PATH` | No | Auto-set by Railway once a persistent volume is attached to the service. When present, `tasks.db` (the scheduler/subscriptions database) is stored there instead of the working directory, so it survives redeploys. Unset locally — `tasks.db` just lives in the repo root. |
 

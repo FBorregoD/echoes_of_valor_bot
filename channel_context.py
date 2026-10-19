@@ -72,6 +72,27 @@ def build_channel_index(guild_channels_config: list[dict]) -> dict:
     return index
 
 
+def normalize_prefix_override(value: str | None) -> str | None:
+    """'dev' / 'dev ' -> 'dev '; '' / None -> None. A word-like prefix gets a
+    trailing space so commands read 'dev ping', not 'devping'."""
+    if not value or not value.strip():
+        return None
+    value = value.strip()
+    return value + " " if value[-1].isalnum() else value
+
+
+def resolve_base_prefix(guild_id: int | None, channel_index: dict, default_prefix: str,
+                        prefix_override: str | None = None) -> str:
+    """Command prefix for a message: in a server, the override if set (local
+    dev bot, see PREFIX_OVERRIDE in main.py), else that server's configured
+    prefix, else the default; in DMs (guild_id None) always the default."""
+    if guild_id is None:
+        return default_prefix
+    if prefix_override:
+        return prefix_override
+    return channel_index.get(guild_id, {}).get("_prefix", default_prefix)
+
+
 # ── Core resolver ─────────────────────────────────────────────────────────────
 
 def resolve_context(
