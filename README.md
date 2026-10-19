@@ -47,7 +47,7 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!schedule add <action> <when> [options]` | Create a recurring task. |
 | `!schedule list` | List scheduled tasks for the current server. |
 | `!schedule listall` | List scheduled tasks for every server (works in DMs). |
-| `!schedule remove <id> \| all \| tournament=<alias>` | Delete one task, every task on this server, or every task for a tournament. |
+| `!schedule remove <id> \| all \| tournament=<alias>` | Delete one task, every task on this server, or every task for a tournament. `remove <id>` also works in DMs, for a task on any server (IDs from `!schedule listall`). |
 | `!schedule info <id>` | Show a task's details. |
 | `!schedule actions` | List available scheduled actions and their parameters. |
 

@@ -53,7 +53,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!schedule add <action> <when> [options]` — Create a recurring task.\n"
                 "`!schedule list` — List scheduled tasks for this server.\n"
                 "`!schedule listall` — List scheduled tasks for every server (works in DMs).\n"
-                "`!schedule remove <id>` — Delete a task.\n"
+                "`!schedule remove <id>` — Delete a task (also in DMs, any server).\n"
                 "`!schedule remove all` — Delete every task for this server.\n"
                 "`!schedule remove tournament=<alias>` — Delete all tasks for that tournament.\n"
                 "`!schedule info <id>` — Show task details.\n"
@@ -283,18 +283,24 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 f"`{bot_mention} !schedule remove tournament=EoV`"
             ),
             (
-                "Requires admin.\n"
-                "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
-                "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
-                "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`, `usage_report`\n"
-                "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's "
-                "matches followed by a !summary of that player.\n"
-                "`standings` does not use `week` — it always posts current standings.\n"
-                "`usage_report` takes `days` (default 7) and `others=yes` (each admin gets it without their "
-                "own commands), and DMs the !usage_report to the admins in `alert_user_ids` (or "
-                "`admin_user_ids`) — nothing is posted in the channel.\n"
-                "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
-                "`add`, `list`, `remove` and `info` only work inside a server; use `listall` to check tasks from a DM."
+                # Split into several embed fields: Discord caps each at 1024 chars.
+                (
+                    "Requires admin.\n"
+                    "**`<when>` formats:** `monday 09:00` (+ `tz=`) · `every=30m` · `every=2h` · `every=1d`\n"
+                    "**Options:** `tz` · `week` · `tournament` · `channel` · `end_week`\n"
+                    "`remove` also accepts `all` (every task on this server) or `tournament=<alias>` (all tasks for that tournament).\n"
+                    "`add`, `list`, `info`, `remove all` and `remove tournament=` only work inside a server. From a DM, "
+                    "use `listall` to see every task and `remove <id>` to delete one from any server."
+                ),
+                (
+                    "**Actions:** `post_divisions`, `notify_all`, `standings`, `report_misreported`, `notify_subscribed_players`, `usage_report`\n"
+                    "`notify_subscribed_players` takes no params — it DMs every `!subscribe`d user their player's "
+                    "matches followed by a !summary of that player.\n"
+                    "`standings` does not use `week` — it always posts current standings.\n"
+                    "`usage_report` takes `days` (default 7) and `others=yes` (each admin gets it without their "
+                    "own commands), and DMs the !usage_report to the admins in `alert_user_ids` (or "
+                    "`admin_user_ids`) — nothing is posted in the channel."
+                ),
             )
         ),
     }
@@ -305,8 +311,10 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         embed.add_field(name="Usage", value=usage, inline=False)
         if example:
             embed.add_field(name="Example", value=example, inline=False)
-        if note:
-            embed.add_field(name="Note", value=note, inline=False)
+        # A note may be a tuple of parts, one embed field each (1024-char cap per field).
+        for i, part in enumerate(note if isinstance(note, tuple) else (note,)):
+            if part:
+                embed.add_field(name="Note" if i == 0 else "​", value=part, inline=False)
         return embed
 
     # Unknown command

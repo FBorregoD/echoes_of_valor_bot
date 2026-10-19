@@ -186,7 +186,8 @@ async def test_listall_works_from_a_dm_without_touching_ctx_guild(cog):
         await _listall(cog, ctx)
     ctx.send.assert_awaited_once()
     embed = ctx.send.call_args.kwargs["embed"]
-    assert embed.footer.text == "Total: 1 task(s) across 1 server(s)."
+    assert embed.footer.text.startswith("Total: 1 task(s) across 1 server(s).")
+    assert "!schedule remove <id>" in embed.footer.text
 
 
 @pytest.mark.asyncio
@@ -237,10 +238,51 @@ async def test_list_requires_guild_and_hints_listall(cog):
 
 
 @pytest.mark.asyncio
-async def test_remove_requires_guild(cog):
+async def test_remove_is_allowed_in_dms_for_admins(cog):
     ctx = make_dm_ctx()
-    with pytest.raises(commands.CheckFailure, match="only works inside a server"):
+    await _run_checks(ScheduleCommands.schedule_remove, ctx)   # no CheckFailure
+
+
+@pytest.mark.asyncio
+async def test_remove_still_requires_admin_in_dms(cog):
+    ctx = make_dm_ctx()
+    ctx.bot.admin_user_ids = []
+    with pytest.raises(commands.CheckFailure, match="permission"):
         await _run_checks(ScheduleCommands.schedule_remove, ctx)
+
+
+@pytest.mark.asyncio
+async def test_remove_by_id_from_dm_works_for_any_server(cog):
+    ctx = make_dm_ctx()
+    row = make_task(9, guild_id=1496427949862158418)
+    guild = MagicMock()
+    guild.name = "private testing echoes_bot"
+    cog.bot.get_guild.return_value = guild
+    with patch("schedule_commands.get_task", return_value=row),          patch("schedule_commands.remove_task") as mock_remove:
+        await _remove(cog, ctx, "9")
+    mock_remove.assert_called_once_with(9)
+    cog.bot.get_guild.assert_called_once_with(1496427949862158418)
+    assert "removed successfully from **private testing echoes_bot**" in ctx.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_remove_by_id_from_dm_unknown_server_name(cog):
+    ctx = make_dm_ctx()
+    cog.bot.get_guild.return_value = None
+    with patch("schedule_commands.get_task", return_value=make_task(9, guild_id=123)),          patch("schedule_commands.remove_task"):
+        await _remove(cog, ctx, "9")
+    assert "from **server 123**" in ctx.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arg", ["all", "tournament=EoV", "abc"])
+async def test_bulk_or_invalid_remove_refused_in_dms(cog, arg):
+    ctx = make_dm_ctx()
+    with patch("schedule_commands.list_tasks") as mock_list,          patch("schedule_commands.remove_task") as mock_remove:
+        await _remove(cog, ctx, arg)
+    mock_list.assert_not_called()
+    mock_remove.assert_not_called()
+    assert "only remove one task by its ID" in ctx.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
