@@ -164,3 +164,15 @@ async def test_get_most_recent_week_does_not_block_event_loop(cog, assert_does_n
     with patch("match_utils.get_tournament_sheets", side_effect=slow_fetch), \
          patch("commands.get_latest_week_from_sheets", return_value=3):
         await assert_does_not_block_event_loop(cog._get_most_recent_week(CONTEXT))
+
+def test_every_help_embed_fits_discord_limits():
+    """Discord rejects embeds with a field value over 1024 chars or 6000 in total."""
+    from help import get_help_embed
+    names = [None, "matches", "division", "standings", "subscribe", "summary", "schedule",
+             "status", "usage_report", "show_sub", "sendto"]
+    for name in names:
+        embed = get_help_embed("@TestBot", name)
+        assert all(len(f.value) <= 1024 for f in embed.fields), name
+        assert len(embed) <= 6000, name
+    schedule = get_help_embed("@TestBot", "schedule")
+    assert len([f for f in schedule.fields if f.name in ("Note", "\u200b")]) == 2

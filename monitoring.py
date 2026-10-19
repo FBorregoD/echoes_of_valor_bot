@@ -4,6 +4,7 @@ Both only work in DMs and only for bot admins. Usage data comes from the
 command_usage table (tasks.db), filled by command_audit for every command a
 user runs; scheduled tasks don't count as usage.
 """
+import json
 import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,30 @@ def _avg_seconds(durations: list[int]) -> str:
     return f"{sum(durations) / len(durations) / 1000:.1f}s" if durations else "—"
 
 
+def _split_by_cache(rows) -> tuple[list[int], list[int]]:
+    """Durations (ms) of rows served from the cache vs rows that had to
+    download the sheet. Rows without fetch tracking or duration are skipped."""
+    cached, downloaded = [], []
+    for r in rows:
+        if r["duration_ms"] is None or r["sheet_fetches"] is None:
+            continue
+        (downloaded if r["sheet_fetches"] > 0 else cached).append(r["duration_ms"])
+    return cached, downloaded
+
+
+def _cache_vs_download(cached: list[int], downloaded: list[int]) -> str:
+    """'cache 2.1s ×60 · download 12.4s ×36 · +10.3s' (only the parts that exist)."""
+    parts = []
+    if cached:
+        parts.append(f"cache {_avg_seconds(cached)} ×{len(cached)}")
+    if downloaded:
+        parts.append(f"download {_avg_seconds(downloaded)} ×{len(downloaded)}")
+    if cached and downloaded:
+        diff = (sum(downloaded) / len(downloaded) - sum(cached) / len(cached)) / 1000
+        parts.append(f"{diff:+.1f}s")
+    return " · ".join(parts)
+
+
 def _root(command: str) -> str:
     """'schedule add' -> 'schedule', so subcommands count towards their group."""
     return command.split(" ")[0]
@@ -83,13 +108,16 @@ def build_usage_report(rows, period_label: str, command_names: list[str]) -> str
     for r in known:
         per_command[_root(r["command"])].append(r)
 
-    lines.append("\n**Commands** (uses · avg time · % that had to download the sheet)")
+    lines.append("\n**Commands** — uses: avg time from cache vs downloading the sheet (×times) · difference")
     for name, cmd_rows in sorted(per_command.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        durations = [r["duration_ms"] for r in cmd_rows if r["duration_ms"] is not None]
-        tracked = [r for r in cmd_rows if r["sheet_fetches"] is not None]
-        fetched = sum(1 for r in tracked if r["sheet_fetches"] > 0)
-        fetch_pct = f"{round(fetched / len(tracked) * 100)}%" if tracked else "—"
-        lines.append(f"`!{name}` {len(cmd_rows)} · {_avg_seconds(durations)} · {fetch_pct}")
+        cached, downloaded = _split_by_cache(cmd_rows)
+        if cached or downloaded:
+            timing = _cache_vs_download(cached, downloaded)
+        else:
+            # e.g. commands that never read the sheet, or that failed before running
+            durations = [r["duration_ms"] for r in cmd_rows if r["duration_ms"] is not None]
+            timing = _avg_seconds(durations)
+        lines.append(f"`!{name}` {len(cmd_rows)}: {timing}")
 
     unused = sorted(set(command_names) - set(per_command))
     if unused:
@@ -103,13 +131,9 @@ def build_usage_report(rows, period_label: str, command_names: list[str]) -> str
     where = [f"DM {dm}"] + [f"{name} {n}" for name, n in servers.most_common()]
     lines.append("\n**Where:** " + " · ".join(where))
 
-    cached = [r["duration_ms"] for r in known
-              if r["sheet_fetches"] == 0 and r["duration_ms"] is not None]
-    fetched = [r["duration_ms"] for r in known
-               if (r["sheet_fetches"] or 0) > 0 and r["duration_ms"] is not None]
-    if cached or fetched:
-        lines.append(f"**Speed:** from cache {_avg_seconds(cached)} ({len(cached)}) · "
-                     f"downloading the sheet {_avg_seconds(fetched)} ({len(fetched)})")
+    cached, downloaded = _split_by_cache(known)
+    if cached or downloaded:
+        lines.append(f"**Speed (all commands):** {_cache_vs_download(cached, downloaded)}")
 
     failures = [r for r in rows if not r["success"]]
     if failures:
@@ -159,7 +183,9 @@ def build_status(bot, now: datetime | None = None) -> str:
     for row in tasks:
         cw = row["current_week"]
         week = "" if cw is None else (" · season over" if cw == -1 else f" · next week {cw}")
-        lines.append(f"`{row['id']}` {row['action']} — {describe_schedule_gmt(row)}{week}")
+        tournament = json.loads(row["params"] or "{}").get("tournament")
+        action = f"{row['action']} **{tournament}**" if tournament else row["action"]
+        lines.append(f"`{row['id']}` {action} — {describe_schedule_gmt(row)}{week}")
 
     lines.append(f"\n**Subscriptions:** {len(list_subscriptions())}")
 

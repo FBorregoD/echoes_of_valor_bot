@@ -38,7 +38,7 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!refresh` | Clear and reload all cached Google Sheets data. |
 | `!show_sub` | **DM-only.** List every active `!subscribe` subscription (`Username → Player`). |
 | `!status` | **DM-only.** Bot health: uptime, last disconnect, config source (Drive or local fallback), scheduled tasks, subscriptions, commands since start. |
-| `!usage_report` / `!us [days\|all] [others]` | **DM-only.** Command usage over the last N days (default 7; `others` leaves out your own commands): uses, average time and % that downloaded the sheet per command, unused commands, top users, DM vs server, failures. |
+| `!usage_report` / `!us [days\|all] [others]` | **DM-only.** Command usage over the last N days (default 7; `others` leaves out your own commands): per command: uses and average time from the cache vs downloading the sheet (with the difference), unused commands, top users, DM vs server, failures. |
 
 ### Admin — scheduler
 
@@ -47,7 +47,7 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!schedule add <action> <when> [options]` | Create a recurring task. |
 | `!schedule list` | List scheduled tasks for the current server. |
 | `!schedule listall` | List scheduled tasks for every server (works in DMs). |
-| `!schedule remove <id> \| all \| tournament=<alias>` | Delete one task, every task on this server, or every task for a tournament. |
+| `!schedule remove <id> \| all \| tournament=<alias>` | Delete one task, every task on this server, or every task for a tournament. `remove <id>` also works in DMs, for a task on any server (IDs from `!schedule listall`). |
 | `!schedule info <id>` | Show a task's details. |
 | `!schedule actions` | List available scheduled actions and their parameters. |
 
@@ -151,6 +151,7 @@ The bot doesn't use the Google Sheets API — it fetches sheets as public CSV ex
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes* | The bot's Discord token. |
 | `CONFIG_FILE` | No | Path to the config file to load. Defaults to `config.json`. |
+| `PREFIX_OVERRIDE` | No | **Local dev bot only — never set on the production host.** The dev and production bots share the test servers and load the same config, so both would answer the same prefix there. With e.g. `PREFIX_OVERRIDE=dev` this bot answers `dev ...` in every server instead (a trailing space is added to word prefixes); DMs keep the normal prefix. A warning is logged at startup when it's active. |
 | `LOG_LEVEL` | No | Logging level (`DEBUG`, `INFO`, `WARNING`, ...). Defaults to `INFO`; `DEBUG` adds per-step detail (week resolution, image rendering, HTTP requests). |
 | `RAILWAY_VOLUME_MOUNT_PATH` | No | Auto-set by Railway once a persistent volume is attached to the service. When present, `tasks.db` (the scheduler/subscriptions database) is stored there instead of the working directory, so it survives redeploys. Unset locally — `tasks.db` just lives in the repo root. |
 

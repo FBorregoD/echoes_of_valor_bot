@@ -5,7 +5,7 @@ Commands:
   !schedule add <action> <weekday> <HH:MM> [tz=UTC] [week=default] [tournament=MA] [thread=<id>]
   !schedule list
   !schedule listall        — list tasks across all servers (DM-safe)
-  !schedule remove <id>
+  !schedule remove <id>   — also from a DM, for a task on any server
   !schedule remove all
   !schedule remove tournament=<alias>
   !schedule info <id>
@@ -157,7 +157,7 @@ class ScheduleCommands(commands.Cog):
         embed.add_field(
             name="Remove a task",
             value=(
-                "`!schedule remove <id>`\n"
+                "`!schedule remove <id>` — also works in DMs, for a task on any server\n"
                 "`!schedule remove all` — remove every task for this server\n"
                 "`!schedule remove tournament=<alias>` — remove all tasks for that tournament"
             ),
@@ -428,22 +428,32 @@ class ScheduleCommands(commands.Cog):
             value = "\n".join(lines)
             embed.add_field(name=guild_label, value=value[:1024] or "—", inline=False)
 
-        embed.set_footer(text=f"Total: {len(rows)} task(s) across {len(by_guild)} server(s).")
+        embed.set_footer(text=f"Total: {len(rows)} task(s) across {len(by_guild)} server(s). "
+                              f"Remove one with !schedule remove <id> (works here in DMs too).")
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
     # !schedule remove
     # ------------------------------------------------------------------
     @is_bot_admin()
-    @require_guild()
     @schedule_group.command(name='remove')
     async def schedule_remove(self, ctx, *, arg: str):
         """
-        !schedule remove <id>                — remove a single task
+        !schedule remove <id>                — remove a single task (in a DM: from any server)
         !schedule remove all                 — remove every task for this server
         !schedule remove tournament=<alias>  — remove all tasks for that tournament
         """
         arg = arg.strip()
+        in_dm = ctx.guild is None
+
+        # In a DM only single-task removal by ID is allowed: `all` and
+        # `tournament=` act on a whole server, too easy to overreach from here.
+        if in_dm and not arg.isdigit():
+            await ctx.send(
+                "❌ In DMs you can only remove one task by its ID (see `!schedule listall`). "
+                "`all` and `tournament=` only work inside a server."
+            )
+            return
 
         if arg.lower() == "all":
             rows = list_tasks(guild_id=ctx.guild.id)
@@ -486,11 +496,16 @@ class ScheduleCommands(commands.Cog):
         if not row:
             await ctx.send(f"❌ No task found with ID `{task_id}`.")
             return
-        if row["guild_id"] != ctx.guild.id:
+        if not in_dm and row["guild_id"] != ctx.guild.id:
             await ctx.send("❌ That task doesn't belong to this server.")
             return
         remove_task(task_id)
-        await ctx.send(f"🗑️ Task `{task_id}` (`{row['action']}`) removed successfully.")
+        if in_dm:
+            guild = self.bot.get_guild(row["guild_id"])
+            server = guild.name if guild else f"server {row['guild_id']}"
+            await ctx.send(f"🗑️ Task `{task_id}` (`{row['action']}`) removed successfully from **{server}**.")
+        else:
+            await ctx.send(f"🗑️ Task `{task_id}` (`{row['action']}`) removed successfully.")
 
     # ------------------------------------------------------------------
     # !schedule info
