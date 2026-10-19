@@ -38,7 +38,7 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!refresh` | Clear and reload all cached Google Sheets data. |
 | `!show_sub` | **DM-only.** List every active `!subscribe` subscription (`Username → Player`). |
 | `!status` | **DM-only.** Bot health: uptime, last disconnect, config source (Drive or local fallback), scheduled tasks, subscriptions, commands since start. |
-| `!usage_report` / `!us [days\|all] [others]` | **DM-only.** Command usage over the last N days (default 7; `others` leaves out your own commands): uses, average time and % that downloaded the sheet per command, unused commands, top users, DM vs server, failures. |
+| `!usage_report` / `!us [days\|all] [others]` | **DM-only.** Command usage over the last N days (default 7; `others` leaves out your own commands): per command: uses and average time from the cache vs downloading the sheet (with the difference), unused commands, top users, DM vs server, failures. |
 
 ### Admin — scheduler
 

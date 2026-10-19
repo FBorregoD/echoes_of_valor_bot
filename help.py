@@ -195,8 +195,9 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             f"`{bot_mention} !us 30`\n`{bot_mention} !us all others`",
             "Requires admin, and only works in DMs. Default: last 7 days; `all` for the whole history; "
             "`others` leaves out your own commands (e.g. your testing), so you only see what everyone else does. "
-            "Per command: uses, average time and the % of uses that had to download the sheet (instead of "
-            "using the 5-minute cache). Also lists commands nobody used, the top users, DM vs server use, "
+            "Per command: uses, and the average time when served from the 5-minute cache vs when it had to "
+            "download the sheet (how many times each, and the difference). Also lists commands nobody used, "
+            "the top users, DM vs server use, "
             "cache vs download speed, and failures including mistyped commands. Scheduled tasks don't count. "
             "Can be sent automatically with `!schedule add usage_report monday 09:00 tz=Europe/Madrid days=7 others=yes` "
             "— it's DMed to the admins in the config's `alert_user_ids` (or `admin_user_ids`), never posted "

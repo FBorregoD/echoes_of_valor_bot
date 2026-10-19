@@ -69,18 +69,26 @@ def test_usage_report_counts_users_commands_and_unused():
                                 ["matches", "summary", "schedule", "standings", "division"])
 
     assert "**6** commands by **3** users" in report
-    # matches: 3 uses, avg (12+2+1)/3 = 5.0s, 1 of 3 had to download -> 33%
-    assert "`!matches` 3 · 5.0s · 33%" in report
-    assert "`!summary` 1 · 3.0s · 0%" in report
-    # subcommands count towards their group; no fetch data -> —
-    assert "`!schedule` 1 · 0.1s · —" in report
+    # matches: cached 2s and 1s -> 1.5s ×2; downloaded 12s ×1; difference +10.5s
+    assert "`!matches` 3: cache 1.5s ×2 · download 12.0s ×1 · +10.5s" in report
+    # only cached uses -> no download part, no difference
+    assert "`!summary` 1: cache 3.0s ×1" in report
+    # subcommands count towards their group; no fetch tracking -> plain average
+    assert "`!schedule` 1: 0.1s" in report
     assert "**Never used:** `!division`, `!standings`" in report
     assert report.index("supertalls 3") < report.index("scorium 2") < report.index("zeric 1")
     assert "**Where:** DM 5 · Realms Rising 1" in report
     assert "**Failures:** 1 — CommandNotFound 1" in report
     assert "Unknown commands typed: `mm` 1" in report
-    # Speed: cached rows 2s,3s,1s -> 2.0s (3); fetched 12s (1)
-    assert "from cache 2.0s (3) · downloading the sheet 12.0s (1)" in report
+    # Overall: cached rows 2s,3s,1s -> 2.0s ×3; downloaded 12s ×1; +10.0s
+    assert "**Speed (all commands):** cache 2.0s ×3 · download 12.0s ×1 · +10.0s" in report
+
+
+def test_usage_report_only_downloads_shows_no_difference():
+    rows = [_row(1, "u", "standings", duration_ms=8000, sheet_fetches=2)]
+    report = build_usage_report(rows, "last 7 days", ["standings"])
+    assert "`!standings` 1: download 8.0s ×1" in report
+    assert "cache" not in report.split("**Commands**")[1].split("\n")[1]
 
 
 def test_usage_report_empty_period():
