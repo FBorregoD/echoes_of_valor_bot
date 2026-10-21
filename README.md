@@ -16,6 +16,8 @@ Built for the **Realms Rising** Discord server's communities, currently running 
 
 Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `!help <command>`) shows this from inside Discord, always up to date with the code.
 
+**Where commands are accepted:** regular users talk to the bot **by DM**. In a server, a message is only treated as a command if it comes from a bot admin **and** is posted in a channel listed in `guild_channels` (or a thread inside one); everything else is ignored silently — no reply, not logged, not counted in `!usage_report`. Messages from other bots are always ignored, and an unknown command inside a server (e.g. `!roll`, meant for another bot that shares the `!` prefix) gets no reply either. In DMs an unknown command still answers "Command unknown".
+
 ### Public
 
 | Command | Description |

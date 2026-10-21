@@ -37,6 +37,7 @@ from discord.ext import commands, tasks
 
 from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported, find_tournament
 from match_utils import normalize_name, week_has_matches
+from channel_context import is_channel_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -339,38 +340,8 @@ def format_task(row: sqlite3.Row) -> str:
 
 # ── Channel allowlist check ────────────────────────────────────────────────────
 
-def _is_channel_allowed(guild: discord.Guild, channel: discord.TextChannel | discord.Thread,
-                        channel_index: dict) -> bool:
-    """
-    Return True if the channel (or its parent, if a thread) is listed in the
-    bot's channel_index for this guild.
-    """
-    if guild is None:
-        return False
-
-    gid = guild.id
-    if gid not in channel_index:
-        return False
-
-    guild_map = channel_index[gid]
-
-    # Determine the base channel to check
-    if isinstance(channel, discord.Thread):
-        base_channel = channel.parent
-    else:
-        base_channel = channel
-
-    if base_channel is None:
-        return False
-
-    # Check by ID
-    if base_channel.id in guild_map:
-        return True
-
-    # Check by name
-    base_name = base_channel.name.lower()
-    by_name = guild_map.get("_by_name", {})
-    return base_name in by_name
+# Lives in channel_context (also used by main.py's server message filter).
+_is_channel_allowed = is_channel_allowed
 
 
 async def _fetch_sheets_by_tourney(tournaments: list[dict]) -> dict:

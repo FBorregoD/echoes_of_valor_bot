@@ -16,7 +16,9 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             title="📖 Bot Commands",
             description=(
                 f"Use `{bot_mention} !<command>` or just `!<command>` if the bot has prefix access.\n"
-                f"Use `{bot_mention} !help <command>` for details on any command."
+                f"Use `{bot_mention} !help <command>` for details on any command.\n"
+                "**Send your commands to the bot by DM.** In servers it only answers bot admins, "
+                "and only in its own channels."
             ),
             color=discord.Color.blue()
         )
