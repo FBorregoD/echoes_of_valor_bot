@@ -93,6 +93,51 @@ def resolve_base_prefix(guild_id: int | None, channel_index: dict, default_prefi
     return channel_index.get(guild_id, {}).get("_prefix", default_prefix)
 
 
+def is_channel_allowed(guild: discord.Guild, channel: discord.TextChannel | discord.Thread,
+                       channel_index: dict) -> bool:
+    """
+    Return True if the channel (or its parent, if a thread) is listed in the
+    bot's channel_index for this guild.
+    """
+    if guild is None:
+        return False
+
+    gid = guild.id
+    if gid not in channel_index:
+        return False
+
+    guild_map = channel_index[gid]
+
+    # Determine the base channel to check
+    if isinstance(channel, discord.Thread):
+        base_channel = channel.parent
+    else:
+        base_channel = channel
+
+    if base_channel is None:
+        return False
+
+    # Check by ID
+    if base_channel.id in guild_map:
+        return True
+
+    # Check by name
+    base_name = base_channel.name.lower()
+    by_name = guild_map.get("_by_name", {})
+    return base_name in by_name
+
+
+def accepts_server_message(message, admin_user_ids, channel_index: dict) -> bool:
+    """Whether a message posted in a server may be treated as a command:
+    only from a bot admin, and only in a channel (or a thread inside one)
+    listed in the config's guild_channels. Everything else in servers is
+    ignored silently — other bots there share prefixes like "!" (e.g.
+    "!roll"), and regular users talk to this bot by DM."""
+    if message.author.id not in admin_user_ids:
+        return False
+    return is_channel_allowed(message.guild, message.channel, channel_index)
+
+
 # ── Core resolver ─────────────────────────────────────────────────────────────
 
 def resolve_context(

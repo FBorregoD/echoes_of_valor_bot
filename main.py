@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from commands import setup as setup_commands
 from schedule_commands import setup_schedule
 from scheduler import SchedulerCog
-from channel_context import build_channel_index, normalize_prefix_override, resolve_base_prefix
+from channel_context import (
+    build_channel_index, normalize_prefix_override, resolve_base_prefix, accepts_server_message,
+)
 from remote_config import load_config_with_source
 from command_audit import (
     log_command_start, log_command_finish, log_command_failure, start_sheet_fetch_tracking,
@@ -163,7 +165,12 @@ async def on_resumed():
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user:
+    # Ignore every bot, ourselves included — never react to other bots' output.
+    if message.author.bot:
+        return
+    # In servers, only admins in the configured channels can give commands;
+    # everyone else is ignored silently (regular users use DMs).
+    if message.guild is not None and not accepts_server_message(message, ADMIN_USER_IDS, CHANNEL_INDEX):
         return
     await bot.process_commands(message)
 
@@ -180,6 +187,11 @@ async def on_command_completion(ctx):
 
 @bot.event
 async def on_command_error(ctx, error):
+    # In servers other bots share prefixes like "!" (e.g. "!roll"): a command
+    # this bot doesn't have is someone else's — no reply, not counted as usage.
+    if isinstance(error, commands.CommandNotFound) and ctx.guild is not None:
+        logger.debug(f"Ignoring unknown command in server: {ctx.message.content!r}")
+        return
     log_command_failure(ctx, error)
     if isinstance(error, commands.CheckFailure):
         await ctx.send(str(error) or "❌ You don't have permission to use this command.")
