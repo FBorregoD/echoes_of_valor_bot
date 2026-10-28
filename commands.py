@@ -34,7 +34,7 @@ from tournament_actions import (
     get_division_sheets,
 )
 from channel_context import resolve_context, parse_division_args
-from image_render import render_standings, render_player_matches, set_scale
+from image_render import render_standings, render_player_matches, set_scale, result_text
 from help import get_help_embed
 
 logger = logging.getLogger(__name__)
@@ -255,8 +255,12 @@ class TournamentCommands(commands.Cog):
                 if t['current']:
                     lines.append(f"**Week {week} matches:**")
                     for r in t['current']:
-                        status = " ✓" if r[5] else (" ⚠️" if len(r) > 6 and r[6] else "")
-                        lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) vs {r[3]} ({r[4]}){status}")
+                        score = r[7] if len(r) > 7 else None
+                        if score:
+                            lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) **{result_text(score)}** {r[3]} ({r[4]})")
+                        else:
+                            status = " ✓" if r[5] else (" ⚠️" if len(r) > 6 and r[6] else "")
+                            lines.append(f"**{r[0]}** · {r[1]} ({r[2]}) vs {r[3]} ({r[4]}){status}")
                 if t['pending']:
                     lines.append("\n**⏳ Pending matches:**")
                     for r in t['pending']:
@@ -329,7 +333,12 @@ class TournamentCommands(commands.Cog):
                     ph, opp = pick(m)
                     finished = bool(m.get('finished'))
                     misreported = bool(m.get('misreported'))
-                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished, misreported))
+                    # Result from the player's side (their points first), shown instead of ✓.
+                    score = None
+                    if finished:
+                        s1, s2 = int(m['score1']), int(m['score2'])
+                        score = (s1, s2) if ph == m['player1'] else (s2, s1)
+                    cur_rows.append((m['division'], *fmt(ph), *fmt(opp), finished, misreported, score))
 
                 normal_pend, misreported = self._split_pending(pending)
                 pend_rows = []
@@ -542,6 +551,7 @@ class TournamentCommands(commands.Cog):
         # irrelevant here; the roster that actually matters is "is this
         # player registered in a tournament at all", which the builds sheet
         # answers regardless of whether they've linked Discord.
+        await ctx.send(f"🔍 Checking **{player}** in the tournament roster...")
         player_key = normalize_name(player)
         prefix = player_key + "-"
         found = False
@@ -613,6 +623,7 @@ class TournamentCommands(commands.Cog):
             if arg.lower() != "text":
                 await ctx.send(f"ℹ️ Ignoring unknown option `{arg}`.")
 
+        await ctx.send(f"🔍 Looking up **{player}**'s characters...")
         await self._build_and_send_player_summary(ctx, player, context={'tournament': None})
 
     @is_bot_admin()
@@ -626,6 +637,7 @@ class TournamentCommands(commands.Cog):
             await ctx.send("📭 No active subscriptions.")
             return
 
+        await ctx.send(f"🔍 Loading {len(subs)} subscription(s)...")
         entries = []
         for row in subs:
             try:
@@ -681,6 +693,8 @@ class TournamentCommands(commands.Cog):
                     "Run this command inside a division thread, or use `!d <division> [week]`."
                 )
                 return
+
+        await ctx.send(f"🔍 Loading **{division_name}** matches...")
 
         # If week not set, get the most recent
         if week is None:
@@ -790,6 +804,7 @@ class TournamentCommands(commands.Cog):
                 )
                 return
 
+        await ctx.send(f"🔍 Loading **{division_name}** standings...")
         sent_any = False
         for tourney in tourneys:
             try:

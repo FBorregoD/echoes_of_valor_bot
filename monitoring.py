@@ -273,5 +273,6 @@ class MonitoringCog(commands.Cog):
             await ctx.send("❌ Usage: `!us [days|all] [others]` — e.g. `!us 30`, `!us all others`.")
             return
         exclude = ctx.author.id if others else None
+        await ctx.send("📊 Building the usage report...")
         for chunk in split_message(usage_report_text(self.bot, days, exclude_user_id=exclude)):
             await ctx.send(chunk)

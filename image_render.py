@@ -189,14 +189,21 @@ def _row_text_y(y: int, row_h: int) -> int:
     """Top y for a single line of small text vertically centred in a row."""
     return y + (row_h - _s(15)) // 2
 
-def _draw_vs(draw, cx: int, y: int, badge_w: int, row_h: int | None = None):
+def _draw_vs(draw, cx: int, y: int, badge_w: int, row_h: int | None = None,
+             text: str = "vs", fill: tuple = ACCENT, text_fill: tuple = TEXT_WHITE):
+    """Centre badge of a match row: "vs", or the result of a finished match."""
     row_h = row_h or ROW_H()
     bh = _s(18)
     x0, x1 = cx - badge_w // 2, cx + badge_w // 2
     y0, y1 = y + (row_h - bh) // 2, y + (row_h - bh) // 2 + bh
-    draw.rounded_rectangle([x0, y0, x1, y1], radius=CORNER(), fill=ACCENT)
-    vw = _tw(draw, "vs", _f('bold', BASE() - 1))
-    draw.text((x0 + (badge_w - vw) // 2, y0 + _s(2)), "vs", font=_f('bold', BASE() - 1), fill=TEXT_WHITE)
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=CORNER(), fill=fill)
+    vw = _tw(draw, text, _f('bold', BASE() - 1))
+    draw.text((x0 + (badge_w - vw) // 2, y0 + _s(2)), text, font=_f('bold', BASE() - 1), fill=text_fill)
+
+
+def result_text(score: tuple[int, int]) -> str:
+    """Finished-match result shown in the badge / text, player's own score first."""
+    return f"{score[0]} - {score[1]}"
 
 def _draw_section_header(draw, width: int, y: int, label: str, color: tuple):
     sec_h = SEC_H()
@@ -408,7 +415,8 @@ def render_player_matches(
           'tourney_name': str,
           'week': int,                    # week of this tournament
           'season_complete': bool,        # True if no more matches
-          'current': [(division, p1_name, p1_build, p2_name, p2_build, finished[, misreported]), ...],
+          'current': [(division, p1_name, p1_build, p2_name, p2_build, finished[, misreported[, score]]), ...],
+                     # score: (player's points, opponent's points) when finished, else None
           'pending': [(week_num, division, p1_name, p1_build, p2_name, p2_build), ...],
           'misreported': [...],
         }
@@ -464,7 +472,9 @@ def render_player_matches(
     wk_col_w = _tw(dd, "Wk 9 ", _f('bold', BASE() - 1)) + _s(6)
     max_p1 = max(all_p1, default=_s(120))
     max_p2 = max(all_p2, default=_s(120))
-    vs_w = max(_tw(dd, "vs", _f('bold', BASE() - 1)) + VS_PADX() * 2, _s(26))
+    badge_texts = ["vs"] + [result_text(r[7]) for t in tourney_results
+                             for r in t.get('current', []) if len(r) > 7 and r[7]]
+    vs_w = max(max(_tw(dd, s, _f('bold', BASE() - 1)) for s in badge_texts) + VS_PADX() * 2, _s(26))
 
     # Two-line layout: pending/misreported rows stack "Wk N" above the
     # division in the same column, so they're no wider than current rows.
@@ -477,7 +487,8 @@ def render_player_matches(
     check_w = 0
     for t in tourney_results:
         for r in t.get('current', []):
-            mark = _status_mark(len(r) > 5 and r[5], len(r) > 6 and r[6])
+            has_score = len(r) > 7 and r[7]
+            mark = _status_mark(len(r) > 5 and r[5] and not has_score, len(r) > 6 and r[6])
             if mark:
                 check_w = max(check_w, _tw(dd, mark[0], _f('bold', BASE())))
     if check_w:
@@ -528,6 +539,7 @@ def render_player_matches(
         if is_pending:
             div, p1n, p1b, p2n, p2b = row_data[1], row_data[2], row_data[3], row_data[4], row_data[5]
             finished = misreported = False
+            score = None
             wk = f"Wk {row_data[0]}"
             if two_line:
                 draw.text((x + (div_col_w - _tw(draw, wk, small)) // 2, y + _s(4)), wk, font=small, fill=color)
@@ -540,6 +552,7 @@ def render_player_matches(
             div, p1n, p1b, p2n, p2b = row_data[0], row_data[1], row_data[2], row_data[3], row_data[4]
             finished = row_data[5] if len(row_data) > 5 else False
             misreported = row_data[6] if len(row_data) > 6 else False
+            score = row_data[7] if len(row_data) > 7 else None
             div_y = _row_text_y(y, row_h)
 
         draw.text((x + (div_col_w - _tw(draw, div, small)) // 2, div_y), div, font=small,
@@ -549,9 +562,14 @@ def render_player_matches(
         vs_cx = x + max_p1 + COL_GAP() + vs_w // 2
         p2_x = vs_cx + vs_w // 2 + COL_GAP()
         _draw_name_build(draw, x, y, p1n, p1b, two_line)
-        _draw_vs(draw, vs_cx, y, vs_w, row_h)
+        if score:
+            # Finished: the result replaces "vs" (and the ✓), on a green badge.
+            _draw_vs(draw, vs_cx, y, vs_w, row_h, text=result_text(score),
+                     fill=CHECK_GREEN, text_fill=BG_HEAD)
+        else:
+            _draw_vs(draw, vs_cx, y, vs_w, row_h)
         _draw_name_build(draw, p2_x, y, p2n, p2b, two_line)
-        mark = None if is_pending else _status_mark(finished, misreported)
+        mark = None if is_pending else _status_mark(finished and not score, misreported)
         if mark:
             draw.text((p2_x + max_p2 + _s(4), _row_text_y(y, row_h)),
                       mark[0], font=_f('bold', BASE()), fill=mark[1])

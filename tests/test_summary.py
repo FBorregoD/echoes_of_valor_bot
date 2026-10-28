@@ -196,3 +196,14 @@ async def test_summary_sheet_fetch_error_is_skipped():
         await cog._build_and_send_player_summary(destination, "Scorium", context={'tournament': None})
 
     assert "No characters found for **Scorium**" in destination.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_summary_says_it_is_searching_before_answering(cog):
+    ctx = make_dm_ctx()
+    with patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.get_player_characters", return_value=[]):
+        await TournamentCommands.summary_command.callback(cog, ctx, "Scorium")
+    sent = [c.args[0] for c in ctx.send.call_args_list]
+    assert sent[0] == "🔍 Looking up **Scorium**'s characters..."
+    assert len(sent) == 2    # the "searching" line, then the answer
