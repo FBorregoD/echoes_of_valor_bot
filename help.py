@@ -100,7 +100,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "or the next unplayed week (if no task is found).",
             f"`{bot_mention} !m <player> [text]`",
             f"`{bot_mention} !m Scorium text`  — plain text in DM",
-            "The week is determined automatically: if a scheduled task exists, it shows the week *before* the next scheduled run (i.e., the last published week). If no task is found, it shows the week after the last week with match data (the next unplayed week). Add `text` at the end to get plain text (only works in DMs)."
+            "The week is determined automatically: if a scheduled task exists, it shows the week *before* the next scheduled run (i.e., the last published week). If no task is found, it shows the week after the last week with match data (the next unplayed week). Finished matches of that week show their result (your points first, e.g. `2 - 0`) instead of `vs`; a misreported one is marked ⚠. Add `text` at the end to get plain text (only works in DMs)."
         ),
         'division': (
             "!division / !d",
