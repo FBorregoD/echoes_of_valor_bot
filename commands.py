@@ -23,6 +23,10 @@ from match_utils import (
     get_player_characters,
     find_player_division_rank,
     get_player_division_record,
+    collect_player_names,
+    suggest_players,
+    find_player_name,
+    same_player,
 )
 from tournament_actions import (
     find_tournament,
@@ -60,6 +64,20 @@ def _ordinal(n: int) -> str:
     else:
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"
+
+
+# Output-format flags accepted by the commands that can answer as an image or text.
+FORMAT_FLAGS = ("text", "image")
+
+
+def _did_you_mean(player: str, known_names, command: str) -> str:
+    """A '❓ Maybe you meant **A** or **B**? Try `!m A`.' line (with a leading
+    newline) to append to a "not found" message, or '' if nothing is close."""
+    suggestions = suggest_players(player, known_names)
+    if not suggestions:
+        return ""
+    options = " or ".join(f"**{name}**" for name in suggestions)
+    return f"\n❓ Maybe you meant {options}? Try `!{command} {suggestions[0]}`."
 
 
 def require_dm():
@@ -100,6 +118,50 @@ class TournamentCommands(commands.Cog):
             find_tournament_fn=find_tournament,
         )
     # ── Nuevo método de verificación ──────────────────────────────────────────────
+
+    def _resolve_player_arg(self, ctx, player: str | None, args: tuple) -> tuple[str | None, tuple, bool]:
+        """Player name for !m / !sum / !sub: the one given, or — when none is
+        given (or only a `text`/`image` flag) — the last one that found results for
+        this user. Returns (player, remaining args, came_from_memory)."""
+        from scheduler import get_last_player
+        if player and player.lower() in FORMAT_FLAGS:
+            player, args = None, (player, *args)
+        if player:
+            return player, args, False
+        try:
+            remembered = get_last_player(ctx.author.id)
+        except Exception as e:
+            logger.warning(f"could not read last player for {ctx.author.id}: {e}")
+            remembered = None
+        return remembered, args, remembered is not None
+
+    def _remember_player(self, ctx, player: str) -> None:
+        """Store `player` as this user's last successful search (never breaks the command)."""
+        from scheduler import set_last_player
+        try:
+            set_last_player(ctx.author.id, player)
+        except Exception as e:
+            logger.warning(f"could not remember last player for {ctx.author.id}: {e}")
+
+    async def _output_format(self, ctx, choice: str | None) -> bool:
+        """Whether to answer in text. `choice` is the `text`/`image` flag the
+        user just typed (saved as their preference), or None to use the saved
+        preference (images by default). Tells the user once when it changes."""
+        from scheduler import get_text_mode, set_text_mode
+        try:
+            previous = get_text_mode(ctx.author.id)
+            if choice is None:
+                return previous
+            text_mode = choice == "text"
+            if text_mode != previous:
+                set_text_mode(ctx.author.id, text_mode)
+                await ctx.send("ℹ️ From now on I'll answer in text — add `image` to switch back."
+                               if text_mode else
+                               "ℹ️ From now on I'll answer with images — add `text` to switch back.")
+            return text_mode
+        except Exception as e:
+            logger.warning(f"could not read/save output format for {ctx.author.id}: {e}")
+            return choice == "text"
 
     async def _ensure_dm_or_admin(self, ctx):
         """
@@ -283,11 +345,33 @@ class TournamentCommands(commands.Cog):
         matches_command and the notify_subscribed_players scheduled action,
         which has no ctx/channel to resolve a context from (pass
         {'tournament': None} for a DM-equivalent, all-tournaments lookup).
+
+        `player` must be a player's exact name (case/accents don't matter);
+        anything else gets "no player named …" plus close suggestions, never
+        someone's matches by prefix. Returns the player's real spelling (used
+        in the output, and for the caller to remember) or None.
         """
         weeks_per_tournament, sheets_by_alias = await self._get_weeks_per_tournament(
             context, guild_id=guild_id, force_week=None
         )
         tourneys = self._tourneys_for_ctx(context)
+
+        # Resolve the exact player first, from every tournament's match rows.
+        known_names = set()
+        for tourney in tourneys:
+            if sheets_by_alias.get(tourney['alias']) is None:
+                try:
+                    sheets_by_alias[tourney['alias']] = await get_tournament_sheets_async(
+                        tourney['url'], force_refresh=False)
+                except Exception:
+                    continue   # reported per tournament in the loop below
+            known_names |= collect_player_names(sheets_by_alias[tourney['alias']])
+        canonical = find_player_name(player, known_names)
+        if canonical is None and known_names:
+            await destination.send(f"❌ No player named **{player}** in any tournament."
+                                   + _did_you_mean(player, known_names, "m"))
+            return None
+        player = canonical or player
 
         tourney_results = []
         errors = []
@@ -301,7 +385,7 @@ class TournamentCommands(commands.Cog):
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
-                current, pending = get_player_matches(sheets, player, week)
+                current, pending = get_player_matches(sheets, player, week, exact=True)
 
                 # Si no hay partidos y la semana supera la última con datos, considerar temporada completa
                 if not current and not pending:
@@ -324,7 +408,7 @@ class TournamentCommands(commands.Cog):
                     return (name, b.get(normalize_name(name), '?'))
 
                 def pick(m):
-                    if player_matches(player, m['player1']):
+                    if same_player(player, m['player1']):
                         return m['player1'], m['player2']
                     return m['player2'], m['player1']
 
@@ -370,7 +454,7 @@ class TournamentCommands(commands.Cog):
 
         if not tourney_results and not errors:
             await destination.send(f"📅 No matches found for **{player}** in any tournament.")
-            return
+            return None
 
         if force_text:
             await self._send_matches_text(destination, player, tourney_results)
@@ -383,6 +467,7 @@ class TournamentCommands(commands.Cog):
             except Exception as e:
                 logger.exception(f"_build_and_send_player_matches image render failed: {e}")
                 await self._send_matches_text(destination, player, tourney_results)
+        return player if tourney_results else None
 
     async def _build_and_send_player_summary(self, destination, player: str, context: dict):
         """
@@ -402,6 +487,8 @@ class TournamentCommands(commands.Cog):
         """
         tourneys = self._tourneys_for_ctx(context)
         sections = []
+        known_names = set()   # for "maybe you meant" if the player isn't found
+        real_name = None
 
         for tourney in tourneys:
             try:
@@ -409,12 +496,15 @@ class TournamentCommands(commands.Cog):
             except Exception as e:
                 logger.error(f"_build_and_send_player_summary ({tourney['name']}): {e}", exc_info=True)
                 continue
+            known_names |= collect_player_names(sheets)
 
             characters = get_player_characters(
                 sheets, player, tourney.get('builds_sheet'), tourney.get('builds_mapping')
             )
             if not characters:
                 continue
+            # Real spelling from the roster ("Player - Hero"), e.g. "Scorium" for "scorium".
+            real_name = real_name or characters[0]['display_name'].split(" - ")[0].strip()
 
             # Lines are sorted by division (in the sheet's tab order, i.e. top
             # division first, Unranked last), then by hero name.
@@ -461,11 +551,13 @@ class TournamentCommands(commands.Cog):
             sections.append("\n".join(lines))
 
         if not sections:
-            await destination.send(f"📅 No characters found for **{player}** in any tournament.")
-            return
+            await destination.send(f"📅 No characters found for **{player}** in any tournament."
+                                   + _did_you_mean(player, known_names, "sum"))
+            return None
 
         for chunk in split_message("\n\n".join(sections)):
             await destination.send(chunk)
+        return real_name or player
 
     # ── Public commands ────────────────────────────────────────────────────────
 
@@ -494,43 +586,51 @@ class TournamentCommands(commands.Cog):
             return
         await self._ensure_dm_or_admin(ctx)
 
+        player, args, from_memory = self._resolve_player_arg(ctx, player, args)
         if not player:
-            await ctx.send("❌ Please specify a player name. Example: `!m Scorium`")
+            await ctx.send("❌ Please specify a player name. Example: `!m Scorium` "
+                           "— after that, `!m` alone repeats your last search.")
             return
 
-        # Solo permitir el flag 'text' (y solo en DMs)
-        force_text = False
+        # 'text' / 'image' flags (DMs only); the choice is remembered per user
+        format_choice = None
         is_dm = ctx.guild is None
         for arg in args:
-            if arg.lower() == "text":
+            if arg.lower() in FORMAT_FLAGS:
                 if is_dm:
-                    force_text = True
+                    format_choice = arg.lower()
                 else:
-                    await ctx.send("ℹ️ The `text` flag only works in direct messages (DMs). Ignored.")
+                    await ctx.send(f"ℹ️ The `{arg.lower()}` flag only works in direct messages (DMs). Ignored.")
             else:
                 # Cualquier otro argumento se ignora y se notifica
                 await ctx.send(f"ℹ️ The `!m` command no longer accepts a week number. The week is determined automatically. Ignoring `{arg}`.")
 
-        await ctx.send(f"🔍 Searching for **{player}**...")
+        force_text = await self._output_format(ctx, format_choice) if is_dm else False
+        await ctx.send(f"🔍 Searching for **{player}**{' (your last search)' if from_memory else ''}...")
 
         guild_id = ctx.guild.id if ctx.guild else None
-        await self._build_and_send_player_matches(ctx, player, force_text and is_dm, guild_id, context)
+        found = await self._build_and_send_player_matches(ctx, player, force_text and is_dm, guild_id, context)
+        if found:
+            self._remember_player(ctx, found)   # real spelling, e.g. "Scorium" for "scorium"
 
     @require_dm()
     @commands.command(name='subscribe', aliases=['sub'])
     async def subscribe_command(self, ctx, player: str = None, *args):
         """DM-only. Subscribe to a player: get DM'd their matches whenever
         notify_subscribed_players fires, as if you'd run !m <player>."""
+        player, args, _ = self._resolve_player_arg(ctx, player, args)
         if not player:
-            await ctx.send("❌ Please specify a player name. Example: `!sub Scorium`")
+            await ctx.send("❌ Please specify a player name. Example: `!sub Scorium` "
+                           "— after a search, `!sub` alone uses your last searched player.")
             return
 
-        force_text = False
+        format_choice = None
         for arg in args:
-            if arg.lower() == "text":
-                force_text = True
+            if arg.lower() in FORMAT_FLAGS:
+                format_choice = arg.lower()
             else:
                 await ctx.send(f"ℹ️ Ignoring unknown option `{arg}`.")
+        force_text = await self._output_format(ctx, format_choice)
 
         from scheduler import add_subscription, list_subscriptions, list_tasks_by_action, describe_schedule_gmt
 
@@ -556,6 +656,7 @@ class TournamentCommands(commands.Cog):
         prefix = player_key + "-"
         found = False
         any_roster_loaded = False
+        known_names = set()   # for "maybe you meant" if the player isn't found
         for tourney in self.tournaments:
             try:
                 sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
@@ -566,6 +667,7 @@ class TournamentCommands(commands.Cog):
                 logger.warning(f"subscribe_command: couldn't load roster for {tourney['name']}: {e}")
                 continue
             any_roster_loaded = True
+            known_names |= collect_player_names(sheets)
             # builds keys are normalize_name("Player - Hero"), e.g. "samwise-mordek" —
             # match the player portion by prefix so it doesn't also match a hero
             # name that happens to contain the search term (e.g. searching "ard"
@@ -582,12 +684,15 @@ class TournamentCommands(commands.Cog):
             await ctx.send(
                 f"❌ I couldn't find a player named **{player}**. "
                 "Please make sure you typed the name exactly as it's registered in the tournaments."
+                + _did_you_mean(player, known_names, "sub")
             )
             return
 
-        # The builds dict only stores normalized keys, so the original
-        # spelling isn't recoverable from it — store what the user typed.
+        # The builds dict only stores normalized keys; take the real spelling
+        # from the match rows when the player has any, else what was typed.
+        player = find_player_name(player, known_names) or player
         add_subscription(ctx.author.id, player, force_text)
+        self._remember_player(ctx, player)
 
         tasks = list_tasks_by_action("notify_subscribed_players")
         if tasks:
@@ -616,15 +721,19 @@ class TournamentCommands(commands.Cog):
     @commands.command(name='summary', aliases=['sum'])
     async def summary_command(self, ctx, player: str = None, *args):
         """DM-only. Show a player's characters and win/loss record across every tournament."""
+        player, args, from_memory = self._resolve_player_arg(ctx, player, args)
         if not player:
-            await ctx.send("❌ Please specify a player name. Example: `!summary Scorium`")
+            await ctx.send("❌ Please specify a player name. Example: `!sum Scorium` "
+                           "— after that, `!sum` alone repeats your last search.")
             return
         for arg in args:
-            if arg.lower() != "text":
+            if arg.lower() not in FORMAT_FLAGS:   # !sum is text-only; the flags change nothing here
                 await ctx.send(f"ℹ️ Ignoring unknown option `{arg}`.")
 
-        await ctx.send(f"🔍 Looking up **{player}**'s characters...")
-        await self._build_and_send_player_summary(ctx, player, context={'tournament': None})
+        await ctx.send(f"🔍 Looking up **{player}**'s characters{' (your last search)' if from_memory else ''}...")
+        found = await self._build_and_send_player_summary(ctx, player, context={'tournament': None})
+        if found:
+            self._remember_player(ctx, found)
 
     @is_bot_admin()
     @require_dm()
@@ -659,13 +768,13 @@ class TournamentCommands(commands.Cog):
             return
         await self._ensure_dm_or_admin(ctx)
         is_dm = ctx.guild is None
-        force_text = False
         rest = list(args)
 
-        # ── Parse "text" flag (only in DMs) ──
-        if is_dm and rest and rest[-1].lower() == "text":
-            force_text = True
-            rest.pop()
+        # ── Parse "text" / "image" flag (only in DMs; remembered per user) ──
+        format_choice = None
+        if is_dm and rest and rest[-1].lower() in FORMAT_FLAGS:
+            format_choice = rest.pop().lower()
+        force_text = await self._output_format(ctx, format_choice) if is_dm else False
 
         # ── Parse division and week ──
         division_name = None
@@ -763,13 +872,13 @@ class TournamentCommands(commands.Cog):
             return
         await self._ensure_dm_or_admin(ctx)
         is_dm = ctx.guild is None
-        force_text = False
         rest = list(args)
 
-        # ── Parse "text" flag (only in DMs) ──
-        if is_dm and rest and rest[-1].lower() == "text":
-            force_text = True
-            rest.pop()
+        # ── Parse "text" / "image" flag (only in DMs; remembered per user) ──
+        format_choice = None
+        if is_dm and rest and rest[-1].lower() in FORMAT_FLAGS:
+            format_choice = rest.pop().lower()
+        force_text = await self._output_format(ctx, format_choice) if is_dm else False
 
         # ── Parse tournament and division ──
         tourney_alias = None

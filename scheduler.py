@@ -141,6 +141,22 @@ def init_db():
                 sheet_fetches INTEGER             -- Google Sheets downloads (0 = served from cache)
             )
         """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS last_player (
+                user_id    INTEGER PRIMARY KEY,
+                player     TEXT    NOT NULL,   -- last player name that found results for this user
+                updated_at TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id    INTEGER PRIMARY KEY,
+                text_mode  INTEGER NOT NULL DEFAULT 0,   -- 1 = answer in text, 0 = images (default)
+                updated_at TEXT
+            )
+        """)
         conn.commit()
     logger.info(f"Scheduler DB initialised at {os.path.abspath(DB_PATH)}.")
 
@@ -248,6 +264,46 @@ def list_subscriptions(user_id: int | None = None) -> list[sqlite3.Row]:
                 "SELECT * FROM subscriptions WHERE user_id = ? ORDER BY player", (user_id,)
             ).fetchall()
         return conn.execute("SELECT * FROM subscriptions ORDER BY user_id, player").fetchall()
+
+
+# ── Last player searched (bare !m / !sum / !sub reuse it) ───────────────────────
+
+def set_last_player(user_id: int, player: str) -> None:
+    """Remember the last player name that found results for this user."""
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO last_player (user_id, player, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET player = excluded.player,
+                                                  updated_at = excluded.updated_at""",
+            (user_id, player.strip(), datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+
+
+def get_last_player(user_id: int) -> str | None:
+    with _get_conn() as conn:
+        row = conn.execute("SELECT player FROM last_player WHERE user_id = ?", (user_id,)).fetchone()
+        return row["player"] if row else None
+
+
+# ── Output format preference ("text" / "image" flags) ───────────────────────────
+
+def set_text_mode(user_id: int, text_mode: bool) -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO user_settings (user_id, text_mode, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET text_mode = excluded.text_mode,
+                                                  updated_at = excluded.updated_at""",
+            (user_id, int(text_mode), datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+
+
+def get_text_mode(user_id: int) -> bool:
+    """True if the user last asked for text output; images by default."""
+    with _get_conn() as conn:
+        row = conn.execute("SELECT text_mode FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+        return bool(row["text_mode"]) if row else False
 
 
 # ── Command usage (!usage_report / !status) ─────────────────────────────────────

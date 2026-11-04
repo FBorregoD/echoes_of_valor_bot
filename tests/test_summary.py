@@ -62,8 +62,19 @@ async def test_summary_command_warns_on_unknown_option(cog):
     ctx = make_dm_ctx()
     with patch("commands.get_tournament_sheets_async", return_value={}), \
          patch("commands.get_player_characters", return_value=[]):
-        await TournamentCommands.summary_command.callback(cog, ctx, "Scorium", "image")
+        await TournamentCommands.summary_command.callback(cog, ctx, "Scorium", "banana")
     assert any("Ignoring unknown option" in c.args[0] for c in ctx.send.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_summary_accepts_format_flags_silently(cog):
+    """!sum is text-only: `text` / `image` are accepted without a warning."""
+    ctx = make_dm_ctx()
+    with patch("commands.get_tournament_sheets_async", return_value={}), \
+         patch("commands.get_player_characters", return_value=[]):
+        await TournamentCommands.summary_command.callback(cog, ctx, "Scorium", "image")
+        await TournamentCommands.summary_command.callback(cog, ctx, "Scorium", "text")
+    assert not any("Ignoring unknown option" in c.args[0] for c in ctx.send.call_args_list)
 
 
 @pytest.mark.asyncio

@@ -224,6 +224,87 @@ def player_matches(search: str, full_name: str) -> bool:
     return False
 
 
+def same_player(name: str, full_name: str) -> bool:
+    """True if `name` is exactly the player-name part of `full_name`
+    ('Player - Hero'), ignoring case and accents. No prefixes: 'sco' is not
+    'Scorium'."""
+    return normalize_name(name.strip()) == normalize_name(_player_name(full_name))
+
+
+def find_player_name(search: str, names) -> str | None:
+    """The real spelling of the player `search` names exactly (ignoring case
+    and accents), from `names` (e.g. collect_player_names); None if none does."""
+    key = normalize_name(search.strip())
+    found = sorted(n for n in names if normalize_name(n) == key)
+    return found[0] if found else None
+
+
+# ------------------------------------------------------------
+# "Did you mean …?" suggestions for mistyped player names
+# ------------------------------------------------------------
+SUGGESTION_MIN_RATIO = 0.6
+
+
+def collect_player_names(sheets_dict: dict) -> set[str]:
+    """Every player name (the 'Player' part of 'Player - Hero') that appears
+    in a match row of any division sheet, with its original spelling."""
+    names = set()
+    for df in sheets_dict.values():
+        if not is_division_sheet(df):
+            continue
+        for col in (2, 3):
+            if df.shape[1] <= col:
+                continue
+            for cell in df.iloc[:, col].dropna():
+                text = str(cell).strip()
+                if " - " in text:
+                    names.add(_player_name(text))
+    return names
+
+
+def _squash(text: str) -> str:
+    """Lowercase, accent-folded, letters/digits only: '.Eindeloos' -> 'eindeloos'."""
+    return re.sub(r"[^0-9a-z]", "", normalize_name(text))
+
+
+def suggest_players(search: str, names, limit: int = 2) -> list[str]:
+    """Up to `limit` known player names close to a search that found nothing.
+
+    Ignores case, accents, spaces and punctuation ('.eindeloos' -> Eindeloos).
+    Ranked: same name once squashed, then names starting with the search (or
+    the other way round), then names containing it ('jeb' -> Jebbins, TheJeb),
+    then names similar enough by edit ratio (>= SUGGESTION_MIN_RATIO)."""
+    import difflib
+    query = _squash(search)
+    if not query:
+        return []
+    scored = []
+    for name in set(names):
+        squashed = _squash(name)
+        if not squashed:
+            continue
+        if squashed == query:
+            score = 1.0
+        elif squashed.startswith(query) or query.startswith(squashed):
+            score = 0.9
+        elif query in squashed:
+            score = 0.8
+        else:
+            score = difflib.SequenceMatcher(None, query, squashed).ratio()
+            if score < SUGGESTION_MIN_RATIO:
+                continue
+        scored.append((-score, len(squashed), name.lower(), name))
+    scored.sort()
+    suggestions, seen = [], set()
+    for *_, name in scored:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            suggestions.append(name)
+        if len(suggestions) == limit:
+            break
+    return suggestions
+
+
 # ------------------------------------------------------------
 # Hero builds loading
 # ------------------------------------------------------------
@@ -423,7 +504,11 @@ def read_match_result(row) -> dict:
         "misreported": not finished and not not_started,
     }
 
-def get_player_matches(sheets_dict: dict, player: str, target_week: int):
+def get_player_matches(sheets_dict: dict, player: str, target_week: int, exact: bool = False):
+    """Matches of `player`. exact=True only takes that exact player name
+    (case/accent-insensitive, see same_player); the default keeps the looser
+    player_matches rules (prefix / whole word) used by the admin paths."""
+    matches_player = same_player if exact else player_matches
     current_matches = []
     pending_matches = []
     for sheet_name, df in sheets_dict.items():
@@ -451,7 +536,7 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int):
             player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
             if not player1 and not player2:
                 continue
-            if player_matches(player, player1) or player_matches(player, player2):
+            if matches_player(player, player1) or matches_player(player, player2):
                 match = {
                     "week": current_week,
                     "player1": player1,

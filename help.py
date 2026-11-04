@@ -25,13 +25,15 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         embed.add_field(
             name="🌐 Public",
             value=(
-                "`!matches` / `!m <player> [text]` — Player's matches as image (add `text` for plain text in DMs).\n"
-                "`!division` / `!d [division] [week] [text]` — Division matchups as image (add `text` in DMs for plain text).\n"
-                "`!standings` / `!c [tournament] [division] [text]` — Division standings as image (add `text` in DMs for plain text).\n"
+                "`!matches` / `!m [player] [text|image]` — Player's matches as image (add `text` for plain text in DMs). No name = your last search.\n"
+                "`!division` / `!d [division] [week] [text|image]` — Division matchups as image (add `text` in DMs for plain text).\n"
+                "`!standings` / `!c [tournament] [division] [text|image]` — Division standings as image (add `text` in DMs for plain text).\n"
                 "`!tournaments` — List available tournaments and their aliases.\n"
-                "`!subscribe` / `!sub <player> [text]` — DM-only. Get DM'd that player's matches automatically.\n"
+                "`!subscribe` / `!sub [player] [text|image]` — DM-only. Get DM'd that player's matches automatically.\n"
                 "`!unsubscribe` / `!unsub` — DM-only. Remove all your subscriptions.\n"
-                "`!summary` / `!sum <player>` — DM-only. Show a player's characters and win/loss record per tournament."
+                "`!summary` / `!sum [player]` — DM-only. Show a player's characters and win/loss record per tournament.\n"
+                "Mistyped a name? The bot suggests close matches. Without a name, `!m` / `!sum` / `!sub` use your last search. "
+                "In DMs your `text` / `image` choice is remembered until you change it."
             ),
             inline=False
         )
@@ -98,14 +100,14 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "!matches / !m",
             "Show a player's matches for the most recently published week (if a scheduled task exists), "
             "or the next unplayed week (if no task is found).",
-            f"`{bot_mention} !m <player> [text]`",
+            f"`{bot_mention} !m [player] [text|image]`",
             f"`{bot_mention} !m Scorium text`  — plain text in DM",
-            "The week is determined automatically: if a scheduled task exists, it shows the week *before* the next scheduled run (i.e., the last published week). If no task is found, it shows the week after the last week with match data (the next unplayed week). Finished matches of that week show their result (your points first, e.g. `2 - 0`) instead of `vs`; a misreported one is marked ⚠. Add `text` at the end to get plain text (only works in DMs)."
+            "The week is determined automatically: if a scheduled task exists, it shows the week *before* the next scheduled run (i.e., the last published week). If no task is found, it shows the week after the last week with match data (the next unplayed week). Finished matches of that week show their result (your points first, e.g. `2 - 0`) instead of `vs`; a misreported one is marked ⚠. Add `text` at the end to get plain text (only works in DMs). Without a name (`!m` or `!m text`) it repeats your last successful search; if the name isn't found, up to two close player names are suggested."
         ),
         'division': (
             "!division / !d",
             "Show all matchups for a division in a given week.",
-            f"`{bot_mention} !d [division] [week] [text]`",
+            f"`{bot_mention} !d [division] [week] [text|image]`",
             (
                 f"`{bot_mention} !d 4`  — week 4 of the current thread's division\n"
                 f"`{bot_mention} !d cadmium 2`  — week 2 of CADMIUM\n"
@@ -116,7 +118,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         'standings': (
             "!standings / !c",
             "Show the current standings table for a division.",
-            f"`{bot_mention} !c [tournament] [division] [text]`",
+            f"`{bot_mention} !c [tournament] [division] [text|image]`",
             (
                 f"`{bot_mention} !c`  — standings for the current thread\n"
                 f"`{bot_mention} !c eov cadmium`  — explicit tournament + division\n"
@@ -135,17 +137,17 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "DM-only. Subscribe to a player — you'll be DM'd their matches (as if you'd run !m <player>), "
             "followed by a !summary of the same player, automatically whenever an admin's "
             "notify_subscribed_players task fires.",
-            f"`{bot_mention} !sub <player> [text]`",
+            f"`{bot_mention} !sub [player] [text|image]`",
             (
                 f"`{bot_mention} !sub Scorium`\n"
                 f"`{bot_mention} !sub Scorium text`  — always DM as plain text instead of an image"
             ),
             "Only works in DMs, for any user. The player name is checked against each tournament's hero-builds "
             "roster (not the !sendto mapping sheet, which only covers players who've linked a Discord ID) — if "
-            "it's not found you'll be told to check the spelling used when they registered; if it's found, the "
+            "it's not found you'll be told to check the spelling (with up to two close names suggested); if it's found, the "
             "confirmation shows exactly when you'll be notified (converted to GMT). **One active subscription per "
             "user** — if you're already subscribed to someone, you'll be told to `!unsub` first, then `!sub` again "
-            "to switch."
+            "to switch. Without a name, `!sub` uses your last successful `!m` / `!sum` / `!sub` search."
         ),
         'unsubscribe': (
             "!unsubscribe / !unsub",
@@ -157,7 +159,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
         'summary': (
             "!summary / !sum",
             "DM-only. Show a player's characters and win/loss record, per tournament.",
-            f"`{bot_mention} !sum <player>`",
+            f"`{bot_mention} !sum [player]`",
             f"`{bot_mention} !sum Scorium`",
             "Only works in DMs, for any user. For each tournament the player is registered in: one line per "
             "character — the character's name in capitals (no player name, that's you), ancestry/class, "
@@ -167,7 +169,8 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "counts as played only if `score1 + score2 == 2` (that's what marks a real completed result — "
             "matches are best-of-two, so a valid result always sums to 2, a 1-1 draw included); the sheet's "
             "\"check\" column is not used for this. Points are that 0-2 sum, not a binary win count — win% is "
-            "points / (played × 2). Text-only for now."
+            "points / (played × 2). Text-only for now. Without a name it repeats your last successful search; "
+            "if the name isn't found, up to two close player names are suggested."
         ),
         'show_sub': (
             "!show_sub",

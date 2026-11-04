@@ -10,6 +10,16 @@ from match_utils import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_tasks_db(monkeypatch, tmp_path):
+    """Every test gets its own empty tasks.db, so nothing a command stores
+    (usage, last searched player, subscriptions…) ever touches the real one.
+    Tests with their own temp DB fixture simply override this path again."""
+    import scheduler
+    monkeypatch.setattr(scheduler, "DB_PATH", str(tmp_path / "tasks.db"))
+    scheduler.init_db()
+
+
 @pytest.fixture
 def assert_does_not_block_event_loop():
     """
