@@ -7,36 +7,73 @@ of the main commands module.
 
 import discord
 
+# Admin-only commands: left out of a regular user's !help, and `!help <one
+# of these>` answers like an unknown command for them.
+ADMIN_COMMANDS = {
+    "sendto", "notify_all", "post_divisions", "post_standings", "refresh",
+    "show_sub", "status", "usage_report", "schedule",
+}
 
-def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
-    """Return a help embed for the bot's commands."""
+
+def get_help_embed(bot_mention: str, command_name: str = None, is_admin: bool = False) -> discord.Embed:
+    """Return a help embed for the bot's commands. Regular users (the
+    default) only see the commands they can use; admins see everything."""
 
     if command_name is None:
-        embed = discord.Embed(
-            title="📖 Bot Commands",
-            description=(
+        if is_admin:
+            description = (
                 f"Use `{bot_mention} !<command>` or just `!<command>` if the bot has prefix access.\n"
                 f"Use `{bot_mention} !help <command>` for details on any command.\n"
-                "**Send your commands to the bot by DM.** In servers it only answers bot admins, "
+                "**Players send their commands by DM.** In servers the bot only answers bot admins, "
                 "and only in its own channels."
-            ),
-            color=discord.Color.blue()
-        )
+            )
+        else:
+            description = (
+                "Send me your commands here, by direct message — for example `!m Scorium`."
+            )
+        embed = discord.Embed(title="📖 Bot Commands", description=description, color=discord.Color.blue())
         embed.add_field(
-            name="🌐 Public",
+            name="⭐ Main commands",
             value=(
-                "`!matches` / `!m [player] [text|image]` — Player's matches as image (add `text` for plain text in DMs). No name = your last search.\n"
-                "`!division` / `!d [division] [week] [text|image]` — Division matchups as image (add `text` in DMs for plain text).\n"
-                "`!standings` / `!c [tournament] [division] [text|image]` — Division standings as image (add `text` in DMs for plain text).\n"
-                "`!tournaments` — List available tournaments and their aliases.\n"
-                "`!subscribe` / `!sub [player] [text|image]` — DM-only. Get DM'd that player's matches automatically.\n"
-                "`!unsubscribe` / `!unsub` — DM-only. Remove all your subscriptions.\n"
-                "`!summary` / `!sum [player]` — DM-only. Show a player's characters and win/loss record per tournament.\n"
-                "Mistyped a name? The bot suggests close matches. Without a name, `!m` / `!sum` / `!sub` use your last search. "
-                "In DMs your `text` / `image` choice is remembered until you change it."
+                "**`!m [player]`** — The player's matches this week: results, pending and misreported games. "
+                "Sent as an image; add `text` for plain text.\n"
+                "↳ `!m Scorium` · `!m Scorium text`\n\n"
+                "**`!sum [player]`** — The player's characters: division, position and win rate.\n"
+                "↳ `!sum Scorium`\n\n"
+                "**`!sum_ext [player] [character] [tournament]`** — Every result of each character, week by week, "
+                "with 🟢 win · 🟡 draw · 🔴 loss.\n"
+                "↳ `!sum_ext Scorium` · `!sum_ext Scorium Mildagas`\n\n"
+                "**`!sub [player]`** — Get that player's matches and summary by DM every week. "
+                "**`!unsub`** stops it.\n"
+                "↳ `!sub Scorium` · `!unsub`"
             ),
             inline=False
         )
+        embed.add_field(
+            name="📋 Other commands",
+            value=(
+                "**`!d <division> [week]`** — Every matchup of a division: this week's, or the week you give.\n"
+                "↳ `!d Gold` · `!d Gold 3`\n\n"
+                "**`!c [tournament] <division>`** — A division's standings.\n"
+                "↳ `!c Gold` · `!c EoV Gold`\n\n"
+                "**`!tournaments`** — The tournaments running and their short names (like `EoV`).\n"
+                "↳ `!tournaments`"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="💡 Tips",
+            value=(
+                "Mistyped a name? The bot suggests close matches. Without a name, `!m` / `!sum` / `!sum_ext` / `!sub` "
+                "use your last search. Your `text` / `image` choice is remembered until you change it. "
+                "Long names work too: `!matches`, `!summary`, `!subscribe`, `!division`, `!standings`."
+            ),
+            inline=False
+        )
+        embed.set_footer(text="Details on any command: !help <command> — e.g. !help sum_ext")
+        if not is_admin:
+            return embed
+
         embed.add_field(
             name="🔐 Admin — Tournament",
             value=(
@@ -63,29 +100,18 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 "`!schedule info <id>` — Show task details.\n"
                 "`!schedule actions` — List available actions.\n\n"
                 "**When:** `monday 09:00` (weekly) or `every=2h` / `30m` / `1d` (interval)\n"
-                "**Options:** `tz=UTC` · `week=4` · `tournament=MA` · `channel=<id>`\n\n"
+                "**Options:** `tz=UTC` · `week=4` · `tournament=EoV` · `channel=<id>`\n\n"
                 "**Examples:**\n"
                 "```\n"
-                f"!schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4\n"
-                f"!schedule add standings monday 09:00 tz=Europe/Madrid tournament=MA\n"
-                f"!schedule add notify_all every=2h week=4\n"
+                f"!schedule add post_divisions friday 08:00 tz=Europe/Madrid tournament=EoV week=2\n"
+                f"!schedule add standings friday 08:01 tz=Europe/Madrid tournament=EoV\n"
+                f"!schedule add usage_report monday 09:00 tz=Europe/Madrid days=7 others=yes\n"
                 f"!schedule remove 3\n"
                 f"!schedule remove tournament=EoV\n"
                 "```"
             ),
             inline=False
         )
-        embed.add_field(
-            name="🛠️ Admin — Debug",
-            value=(
-                "`!context_debug` — Show channel/tournament context for this channel.\n"
-                "`!test_map` — Show full player → Discord ID mapping.\n"
-                "`!test_id <player>` — Look up Discord ID for one player.\n"
-                "`!dmtest <user_id> <message>` — Send a test DM."
-            ),
-            inline=False
-        )
-        embed.set_footer(text=f"Example: {bot_mention} !m Scorium 4  |  !d 4  (inside a division thread)")
         return embed
 
     # ── Detailed command help ────────────────────────────────────────────────
@@ -113,6 +139,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 f"`{bot_mention} !d cadmium 2`  — week 2 of CADMIUM\n"
                 f"`{bot_mention} !d cadmium 2 text`  — (DM only) force plain text"
             ),
+            "Without a week it shows the current one — the same week `!m` shows (the last one published). "
             "Inside a division thread the division name is inferred automatically. In DMs, add `text` at the end to receive plain text."
         ),
         'standings': (
@@ -171,6 +198,21 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             "\"check\" column is not used for this. Points are that 0-2 sum, not a binary win count — win% is "
             "points / (played × 2). Text-only for now. Without a name it repeats your last successful search; "
             "if the name isn't found, up to two close player names are suggested."
+        ),
+        'sum_ext': (
+            "!sum_ext",
+            "DM-only. Every finished match of a player's characters, week by week.",
+            f"`{bot_mention} !sum_ext [player] [character] [tournament]`",
+            (
+                f"`{bot_mention} !sum_ext Scorium`  — all characters, all tournaments\n"
+                f"`{bot_mention} !sum_ext Scorium Mildagas EoV`  — one character in one tournament"
+            ),
+            "Only works in DMs, for any user. For each character: a header `Tournament — Division — Hero (build)`, "
+            "then one line per finished match — `W1 G2 vs Rival - Hero (build) 🟢 2 - 0` (🟢 win · 🟡 draw · 🔴 loss; your points first; G is "
+            "the character's match number that week) — and finally its position and win rate. Matches not played "
+            "yet or with a misreported result are not listed. The character and the tournament are optional and "
+            "can be in any case; a character with spaces in its name works too. Without a name it uses your last "
+            "successful search; a mistyped player gets up to two close names suggested. Text only."
         ),
         'show_sub': (
             "!show_sub",
@@ -282,7 +324,7 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
                 f"`{bot_mention} !schedule actions`"
             ),
             (
-                f"`{bot_mention} !schedule add post_divisions monday 09:00 tz=Europe/Madrid tournament=MA week=4`\n"
+                f"`{bot_mention} !schedule add post_divisions friday 08:00 tz=Europe/Madrid tournament=EoV week=2`\n"
                 f"`{bot_mention} !schedule add notify_all every=2h week=4`\n"
                 f"`{bot_mention} !schedule remove 3`\n"
                 f"`{bot_mention} !schedule remove tournament=EoV`"
@@ -309,6 +351,9 @@ def get_help_embed(bot_mention: str, command_name: str = None) -> discord.Embed:
             )
         ),
     }
+
+    if cmd in ADMIN_COMMANDS and not is_admin:
+        cmd = None   # regular users don't get admin commands' help: answered as unknown
 
     if cmd in help_texts:
         title, desc, usage, example, note = help_texts[cmd]

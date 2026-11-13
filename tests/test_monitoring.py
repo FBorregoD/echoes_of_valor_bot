@@ -204,7 +204,7 @@ def test_sheet_fetch_counted_on_cache_miss_only(monkeypatch):
 def test_usage_report_alias_and_help():
     from help import get_help_embed
     assert "us" in monitoring.MonitoringCog.usage_report_command.aliases
-    assert get_help_embed("@B", "us").title == "!usage_report / !us"
+    assert get_help_embed("@B", "us", is_admin=True).title == "!usage_report / !us"
 
 
 def test_parse_report_args():

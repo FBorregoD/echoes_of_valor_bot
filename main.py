@@ -17,6 +17,7 @@ from command_audit import (
     log_command_start, log_command_finish, log_command_failure, start_sheet_fetch_tracking,
 )
 from monitoring import MonitoringCog
+from welcome import welcome_if_first_dm
 
 # Logging setup — INFO by default; set LOG_LEVEL=DEBUG to get the detailed
 # per-step output (week resolution, image rendering, HTTP requests) back.
@@ -172,6 +173,10 @@ async def on_message(message):
     # everyone else is ignored silently (regular users use DMs).
     if message.guild is not None and not accepts_server_message(message, ADMIN_USER_IDS, CHANNEL_INDEX):
         return
+    # First DM ever from this user: greet them and point to the main commands,
+    # then handle whatever they wrote as usual.
+    if message.guild is None:
+        await welcome_if_first_dm(message, [t['name'] for t in TOURNAMENTS])
     await bot.process_commands(message)
 
 

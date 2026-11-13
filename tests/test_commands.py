@@ -171,8 +171,61 @@ def test_every_help_embed_fits_discord_limits():
     names = [None, "matches", "division", "standings", "subscribe", "summary", "schedule",
              "status", "usage_report", "show_sub", "sendto"]
     for name in names:
-        embed = get_help_embed("@TestBot", name)
-        assert all(len(f.value) <= 1024 for f in embed.fields), name
-        assert len(embed) <= 6000, name
-    schedule = get_help_embed("@TestBot", "schedule")
+        for is_admin in (False, True):
+            embed = get_help_embed("@TestBot", name, is_admin=is_admin)
+            assert all(len(f.value) <= 1024 for f in embed.fields), (name, is_admin)
+            assert len(embed) <= 6000, (name, is_admin)
+    schedule = get_help_embed("@TestBot", "schedule", is_admin=True)
     assert len([f for f in schedule.fields if f.name in ("Note", "\u200b")]) == 2
+
+
+
+# ── !help shows each user only what they can use ───────────────────────────
+
+def _help_text(embed):
+    return "\n".join([embed.description or ""] + [f"{f.name}\n{f.value}" for f in embed.fields])
+
+
+def test_regular_user_help_lists_only_their_commands():
+    text = _help_text(get_help_embed("@B"))            # default = regular user
+    assert "!m [player]" in text and "!sum_ext" in text and "Tips" in text
+    for admin_bit in ("Admin", "!schedule", "!sendto", "!status", "!usage_report", "!refresh"):
+        assert admin_bit not in text, admin_bit
+    assert "by direct message" in text
+
+
+def test_admin_help_lists_everything():
+    text = _help_text(get_help_embed("@B", is_admin=True))
+    for bit in ("!m [player]", "!sum_ext", "Admin — Tournament", "!schedule add", "!usage_report"):
+        assert bit in text, bit
+
+
+def test_help_never_lists_commands_that_do_not_exist():
+    text = _help_text(get_help_embed("@B", is_admin=True))
+    for gone in ("!context_debug", "!test_map", "!test_id", "!dmtest", "tournament=MA"):
+        assert gone not in text, gone
+    assert "Scorium 4" not in get_help_embed("@B").footer.text   # !m takes no week any more
+
+
+def test_admin_command_details_hidden_from_regular_users():
+    from help import ADMIN_COMMANDS
+    for name in sorted(ADMIN_COMMANDS) + ["us"]:
+        assert get_help_embed("@B", name).title == "Unknown Command", name
+        assert get_help_embed("@B", name, is_admin=True).title != "Unknown Command", name
+    assert get_help_embed("@B", "sum_ext").title == "!sum_ext"
+
+
+@pytest.mark.asyncio
+async def test_help_command_passes_admin_status():
+    from unittest.mock import AsyncMock, patch
+    cog = TournamentCommands(MagicMock(), [{"name": "Echoes of Valor", "alias": "EoV", "url": "u"}],
+                             mapping_sheet_url="fake", default_week=2)
+    cog._ctx = MagicMock(return_value={"allowed": True})
+    for author_id, expected in ((1, False), (999, True)):
+        ctx = MagicMock()
+        ctx.author.id = author_id
+        ctx.bot.admin_user_ids = [999]
+        ctx.send = AsyncMock()
+        with patch("commands.get_help_embed") as build:
+            await TournamentCommands.help_command.callback(cog, ctx)
+        assert build.call_args.kwargs["is_admin"] is expected

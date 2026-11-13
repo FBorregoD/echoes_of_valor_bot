@@ -219,7 +219,7 @@ async def test_text_preference_is_ignored_in_servers(cog):
 async def test_division_uses_remembered_text_mode(cog):
     scheduler.set_text_mode(42, True)
     ctx = _dm_ctx()
-    cog._get_most_recent_week = AsyncMock(return_value=2)
+    cog._get_weeks_per_tournament = AsyncMock(return_value=({"EoV": 2}, {}))
     sheets = {"GOLD": pd.DataFrame([
         ["SCHEDULE", None, None, None, None, None, None],
         ["Week 2", "Round 1", "Scorium - Bruno", "TheJeb - Eluna", 2, 0, ""],
@@ -230,3 +230,24 @@ async def test_division_uses_remembered_text_mode(cog):
         await TournamentCommands.division_command.callback(cog, ctx, "GOLD")
     image.assert_not_called()                                   # answered in text
     assert any("Scorium - Bruno vs TheJeb - Eluna" in m for m in _sent(ctx))
+
+
+
+@pytest.mark.asyncio
+async def test_division_without_week_uses_the_same_week_as_m(cog):
+    """The sheet pre-fills every week, so "the last week with matches" is the
+    final one (7); without a week !d must show the published week, like !m."""
+    sheets = {"GOLD": pd.DataFrame([
+        ["SCHEDULE", None, None, None, None, None, None],
+        ["Week 2", "Round 1", "Scorium - Bruno", "TheJeb - Eluna", 2, 0, ""],
+        ["Week 7", "Round 1", "Scorium - Bruno", "Tuff - Calcium", 0, 0, ""],
+    ], columns=list("ABCDEFG"))}
+    scheduler.set_text_mode(42, True)
+    cog._get_weeks_per_tournament = AsyncMock(return_value=({"EoV": 2}, {}))
+    ctx = _dm_ctx()
+    with patch("commands.get_tournament_sheets_async", AsyncMock(return_value=sheets)), \
+         patch("commands.load_hero_builds_from_sheets", return_value={}):
+        await TournamentCommands.division_command.callback(cog, ctx, "GOLD")
+    text = "\n".join(_sent(ctx))
+    assert "— Week 2" in text and "TheJeb - Eluna" in text
+    assert "Tuff - Calcium" not in text                       # week 7 not shown

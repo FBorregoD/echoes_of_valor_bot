@@ -23,6 +23,7 @@ from match_utils import (
     get_player_characters,
     find_player_division_rank,
     get_player_division_record,
+    get_character_results,
     collect_player_names,
     suggest_players,
     find_player_name,
@@ -64,6 +65,34 @@ def _ordinal(n: int) -> str:
     else:
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"
+
+
+# !sum_ext result colour (Discord text can't be coloured): win / draw / loss,
+# keyed by sign(own - opponent).
+_RESULT_EMOJI = {1: "🟢", 0: "🟡", -1: "🔴"}
+
+
+def _characters_by_division(sheets: dict, characters: list[dict]) -> list[tuple]:
+    """(char, division, rank, total_ranked) for each character, sorted by
+    division in the sheet's tab order (top division first, Unranked last),
+    then by hero name. Shared by !sum and !sum_ext."""
+    division_order = [d.lower() for d in get_division_sheets(sheets)]
+
+    def sort_key(entry):
+        division = entry[1]
+        if not division:
+            return (2, 0, "", entry[0]['hero_name'].lower())
+        pos = division.lower()
+        if pos in division_order:
+            return (0, division_order.index(pos), "", entry[0]['hero_name'].lower())
+        return (1, 0, pos, entry[0]['hero_name'].lower())
+
+    entries = []
+    for char in characters:
+        division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
+        entries.append((char, division, rank, total_ranked))
+    entries.sort(key=sort_key)
+    return entries
 
 
 # Output-format flags accepted by the commands that can answer as an image or text.
@@ -506,24 +535,7 @@ class TournamentCommands(commands.Cog):
             # Real spelling from the roster ("Player - Hero"), e.g. "Scorium" for "scorium".
             real_name = real_name or characters[0]['display_name'].split(" - ")[0].strip()
 
-            # Lines are sorted by division (in the sheet's tab order, i.e. top
-            # division first, Unranked last), then by hero name.
-            division_order = [d.lower() for d in get_division_sheets(sheets)]
-
-            def sort_key(entry):
-                division = entry[1]
-                if not division:
-                    return (2, 0, "", entry[0]['hero_name'].lower())
-                pos = division.lower()
-                if pos in division_order:
-                    return (0, division_order.index(pos), "", entry[0]['hero_name'].lower())
-                return (1, 0, pos, entry[0]['hero_name'].lower())
-
-            entries = []
-            for char in characters:
-                division, rank, total_ranked = find_player_division_rank(sheets, char['hero_key'])
-                entries.append((char, division, rank, total_ranked))
-            entries.sort(key=sort_key)
+            entries = _characters_by_division(sheets, characters)
 
             lines = [f"**🏆 {tourney['name']}**"]
             total_played = 0
@@ -558,6 +570,81 @@ class TournamentCommands(commands.Cog):
         for chunk in split_message("\n\n".join(sections)):
             await destination.send(chunk)
         return real_name or player
+
+    async def _build_and_send_player_summary_ext(self, destination, player: str,
+                                                 character: str | None, tourney: dict | None):
+        """
+        !sum_ext: every finished match of a player's characters, week by week
+        ("Week 1 · G2 · Hero (build) 2 - 0 Rival - Hero (build)"), then each
+        character's position and win rate. Only valid results are listed —
+        unplayed and misreported matches are left out. Optionally just one
+        character (hero name, case/accents ignored) and/or one tournament.
+        Returns the player's real spelling, or None if the player wasn't found.
+        """
+        tourneys = [tourney] if tourney else self.tournaments
+        sections = []
+        known_names = set()   # for "maybe you meant" if the player isn't found
+        hero_names = []       # to list if `character` isn't one of theirs
+        real_name = None
+
+        for t in tourneys:
+            try:
+                sheets = await get_tournament_sheets_async(t['url'], force_refresh=False)
+            except Exception as e:
+                logger.error(f"_build_and_send_player_summary_ext ({t['name']}): {e}", exc_info=True)
+                continue
+            known_names |= collect_player_names(sheets)
+
+            characters = get_player_characters(sheets, player, t.get('builds_sheet'), t.get('builds_mapping'))
+            if not characters:
+                continue
+            real_name = real_name or characters[0]['display_name'].split(" - ")[0].strip()
+            hero_names += [c['hero_name'] for c in characters]
+            if character:
+                characters = [c for c in characters
+                              if normalize_name(c['hero_name']) == normalize_name(character)]
+            builds = load_hero_builds_from_sheets(sheets, t.get('builds_sheet'), t.get('builds_mapping'))
+
+            for char, division, rank, total_ranked in _characters_by_division(sheets, characters):
+                build = f"{char['ancestry']} {char['class']}".strip() or "—"
+                # The character goes in the header, so each match line only names the rival.
+                div_label = division.title() if division else "Unranked"
+                lines = [f"**🏆 {t['name']} — {div_label} — {char['hero_name']} ({build})**"]
+                if not division:
+                    lines.append("No results yet.")
+                    sections.append("\n".join(lines))
+                    continue
+
+                results = get_character_results(sheets, division, char['hero_key'])
+                for r in results:
+                    rival = f"{r['opponent']} ({builds.get(normalize_name(r['opponent']), '?')})"
+                    outcome = _RESULT_EMOJI[(r['own_score'] > r['opp_score']) - (r['own_score'] < r['opp_score'])]
+                    lines.append(f"W{r['week']} G{r['game']} vs {rival} {outcome} **{r['own_score']} - {r['opp_score']}**")
+                if not results:
+                    lines.append("No results yet.")
+
+                played, points = get_player_division_record(sheets, division, char['hero_key'])
+                win_rate = f"{round(points / (played * 2) * 100)}%" if played else "—"
+                lines.append(f"Position: {_ordinal(rank)} out of {total_ranked} · "
+                             f"Win rate: {win_rate} ({played} played, {points} points)")
+                sections.append("\n".join(lines))
+
+        if real_name is None:
+            where = f" in {tourney['name']}" if tourney else " in any tournament"
+            await destination.send(f"📅 No characters found for **{player}**{where}."
+                                   + _did_you_mean(player, known_names, "sum_ext"))
+            return None
+
+        if not sections:   # the player exists, but not that character
+            await destination.send(
+                f"❌ **{real_name}** has no character named **{character}**. "
+                f"Their characters: {', '.join(sorted(set(hero_names)))}."
+            )
+            return real_name
+
+        for chunk in split_message("\n\n".join(sections)):
+            await destination.send(chunk)
+        return real_name
 
     # ── Public commands ────────────────────────────────────────────────────────
 
@@ -735,6 +822,35 @@ class TournamentCommands(commands.Cog):
         if found:
             self._remember_player(ctx, found)
 
+    @require_dm()
+    @commands.command(name='sum_ext')
+    async def summary_ext_command(self, ctx, *args):
+        """DM-only. !sum_ext [player] [character] [tournament]: every finished
+        match of the player's characters, week by week, with position and win rate."""
+        words = [a for a in args if a.lower() not in FORMAT_FLAGS]   # text-only command
+        player, rest = (words[0], words[1:]) if words else (None, [])
+
+        # Tournament = the last word(s), e.g. "EoV" or "Echoes of Valor"; the
+        # words in between are the character, which may itself contain spaces.
+        tourney = None
+        for n in range(len(rest), 0, -1):
+            found_t = find_tournament(self.tournaments, " ".join(rest[-n:]))
+            if found_t:
+                tourney, rest = found_t, rest[:-n]
+                break
+        character = " ".join(rest) or None
+
+        player, _, from_memory = self._resolve_player_arg(ctx, player, ())
+        if not player:
+            await ctx.send("❌ Please specify a player name. Example: `!sum_ext Scorium` "
+                           "(optionally a character and a tournament: `!sum_ext Scorium Mildagas EoV`).")
+            return
+
+        await ctx.send(f"🔍 Looking up **{player}**'s matches{' (your last search)' if from_memory else ''}...")
+        found = await self._build_and_send_player_summary_ext(ctx, player, character, tourney)
+        if found:
+            self._remember_player(ctx, found)
+
     @is_bot_admin()
     @require_dm()
     @commands.command(name='show_sub')
@@ -805,29 +921,34 @@ class TournamentCommands(commands.Cog):
 
         await ctx.send(f"🔍 Loading **{division_name}** matches...")
 
-        # If week not set, get the most recent
+        # No week given: per tournament, the same week !m shows (the last one
+        # published by the auto-advancing task) — not the last week in the
+        # schedule, which is the final week once the sheet is pre-filled.
+        weeks_by_alias = {}
         if week is None:
-            week = await self._get_most_recent_week(context)
-            if week <= 0:
-                week = self.default_week
+            weeks_by_alias, _ = await self._get_weeks_per_tournament(
+                context, guild_id=ctx.guild.id if ctx.guild else None)
 
         tourneys = self._tourneys_for_ctx(context)
         sent_any = False
+        shown_weeks = set()
 
         for tourney in tourneys:
+            t_week = week if week is not None else weeks_by_alias.get(tourney['alias'], self.default_week)
+            shown_weeks.add(t_week)
             try:
                 sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
                 builds = load_hero_builds_from_sheets(
                     sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
                 )
-                current, pending = get_division_matches(sheets, division_name, week)
+                current, pending = get_division_matches(sheets, division_name, t_week)
 
                 if not current and not pending:
                     continue
 
                 if force_text and is_dm:
                     # Texto directo
-                    lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {week}"]
+                    lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {t_week}"]
                     for m in current:
                         status = " ✓" if m.get('finished') else ""
                         lines.append(f"{m['player1']} vs {m['player2']}{status}")
@@ -841,14 +962,14 @@ class TournamentCommands(commands.Cog):
                     # Intentar imagen
                     try:
                         await send_division_image(
-                            ctx.channel, tourney['name'], division_name, week,
+                            ctx.channel, tourney['name'], division_name, t_week,
                             current, pending, builds
                         )
                         sent_any = True
                     except Exception as e:
                         logger.exception(f"division_command image render failed: {e}")
                         # Fallback a texto
-                        lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {week}"]
+                        lines = [f"**🏆 {tourney['name']} · {division_name}** — Week {t_week}"]
                         for m in current:
                             status = " ✓" if m.get('finished') else ""
                             lines.append(f"{m['player1']} vs {m['player2']}{status}")
@@ -863,7 +984,8 @@ class TournamentCommands(commands.Cog):
                 await ctx.send(f"❌ Error in {tourney['name']}: {e}")
 
         if not sent_any:
-            await ctx.send(f"⚠️ No matches found for division **{division_name}** in week **{week}**.")
+            week_label = ", ".join(str(w) for w in sorted(shown_weeks)) or "?"
+            await ctx.send(f"⚠️ No matches found for division **{division_name}** in week **{week_label}**.")
 
     @commands.command(name='standings', aliases=['c'])
     async def standings_command(self, ctx, *args):
@@ -1159,7 +1281,8 @@ class TournamentCommands(commands.Cog):
         if not context['allowed']:
             return
         bot_mention = f"@{ctx.bot.user.name}"
-        embed = get_help_embed(bot_mention, command_name)
+        is_admin = ctx.author.id in getattr(ctx.bot, 'admin_user_ids', [])
+        embed = get_help_embed(bot_mention, command_name, is_admin=is_admin)
         await ctx.send(embed=embed)
 
 async def setup(bot, tournaments, mapping_sheet_url, default_week):
