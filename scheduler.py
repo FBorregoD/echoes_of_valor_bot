@@ -157,6 +157,13 @@ def init_db():
                 updated_at TEXT
             )
         """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS welcomed (
+                user_id     INTEGER PRIMARY KEY,  -- got (or didn't need) the first-DM welcome
+                welcomed_at TEXT
+            )
+        """)
         conn.commit()
     logger.info(f"Scheduler DB initialised at {os.path.abspath(DB_PATH)}.")
 
@@ -284,6 +291,29 @@ def get_last_player(user_id: int) -> str | None:
     with _get_conn() as conn:
         row = conn.execute("SELECT player FROM last_player WHERE user_id = ?", (user_id,)).fetchone()
         return row["player"] if row else None
+
+
+# ── First-DM welcome ────────────────────────────────────────────────────────────
+
+def claim_first_contact(user_id: int) -> bool:
+    """True exactly once per user: the first time they write to the bot by DM.
+
+    Users who already used the bot before this existed (they have command
+    usage or a subscription) are marked as welcomed without a greeting. The
+    INSERT OR IGNORE makes two near-simultaneous messages greet only once.
+    """
+    with _get_conn() as conn:
+        known = conn.execute(
+            """SELECT 1 FROM command_usage WHERE user_id = ?
+               UNION SELECT 1 FROM subscriptions WHERE user_id = ? LIMIT 1""",
+            (user_id, user_id),
+        ).fetchone()
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO welcomed (user_id, welcomed_at) VALUES (?, ?)",
+            (user_id, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return cur.rowcount == 1 and not known
 
 
 # ── Output format preference ("text" / "image" flags) ───────────────────────────

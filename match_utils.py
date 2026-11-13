@@ -1082,6 +1082,55 @@ def get_player_division_record(sheets_dict: dict, division_name: str, hero_key: 
     return played, points
 
 
+def get_character_results(sheets_dict: dict, division_name: str, hero_key: str) -> list[dict]:
+    """
+    Finished matches of `hero_key` (normalized "player-hero") in
+    `division_name`, in schedule order, for !sum_ext. Only valid results
+    count (read_match_result "finished": 2-0, 0-2, 1-1); unplayed and
+    misreported matches are left out. `game` is the character's match
+    number within that week in sheet order, counting unplayed ones too, so
+    a skipped G1 doesn't renumber G2.
+
+    Each item: {"week", "game", "opponent" ("Player - Hero" as written),
+    "own_score", "opp_score"}.
+    """
+    target_sheet = next((n for n in sheets_dict if n.lower() == division_name.lower()), None)
+    if not target_sheet:
+        return []
+    df = sheets_dict[target_sheet]
+
+    results = []
+    games_in_week: dict[int, int] = {}
+    current_week = None
+    for idx in range(len(df)):
+        row = df.iloc[idx]
+        cell = row.iloc[0]
+        if pd.notna(cell) and str(cell).strip().startswith("Week"):
+            current_week = parse_week_number(str(cell)) or current_week
+        if current_week is None:
+            continue
+        player1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+        player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+        is_p1 = normalize_name(player1) == hero_key
+        is_p2 = normalize_name(player2) == hero_key
+        if not (is_p1 or is_p2):
+            continue
+
+        games_in_week[current_week] = games_in_week.get(current_week, 0) + 1
+        result = read_match_result(row)
+        if not result["finished"]:
+            continue
+        own, opp = (result["score1"], result["score2"]) if is_p1 else (result["score2"], result["score1"])
+        results.append({
+            "week": current_week,
+            "game": games_in_week[current_week],
+            "opponent": player2 if is_p1 else player1,
+            "own_score": int(own),
+            "opp_score": int(opp),
+        })
+    return results
+
+
 # ------------------------------------------------------------
 # Auto-detect most recent week from tournament sheets
 # ------------------------------------------------------------
