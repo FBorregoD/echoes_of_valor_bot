@@ -1,0 +1,93 @@
+{
+    "config_url":"https://drive.google.com/file/d/1su6h71enAIZSKKlCSOoLZ1tpob1b3YvP/view?usp=sharing",
+    "tournaments": [
+        {
+            "name": "Echoes of Valor",
+            "alias": "EoV",
+            "url": "https://docs.google.com/spreadsheets/d/1ZXWJm2Bnea1V7DWKKjXSxUmr0xvHMGDzXsidbHZvstE",
+            "builds_sheet": "hero builds Season 11",
+            "builds_mapping": {
+                "player_col": 3,
+                "ancestry_col": 4,
+                "class_col": 5
+            },
+            "season": 11
+        }
+    ],
+    "mapping_sheet_url": "https://docs.google.com/spreadsheets/d/1tsb_SfbR1mcFsXbFxgNDt5nTOE7Ag625V5lip-SqTqE/edit?usp=sharing",
+    "default_week": 2,
+    "command_prefix": "!",
+    "admin_user_ids": [
+        254177975417700352,
+        455045255675510805
+    ],
+    "image_scale": 1.0,
+    "guild_channels": [
+        {
+            "_comment": "Servidor de pruebas",
+            "guild_id": 825822880565821451,
+            "prefix": "lol ",
+            "channels": [
+                {
+                    "channel_id": 1492880227876081774,
+                    "channel_name": "eov-general",
+                    "tournament": "EoV"
+                },
+                {
+                    "channel_id": 1494427547243515955,
+                    "channel_name": "ma-general",
+                    "tournament": "MA"
+                },
+                {
+                    "channel_id": 825822881074118688,
+                    "channel_name": "bot-admin",
+                    "tournament": null
+                }
+            ]
+        },
+        {
+            "_comment": "Servidor de pruebas privado",
+            "guild_id": 1496427949862158418,
+            "prefix": "lol ",
+            "channels": [
+                {
+                    "channel_id": 1496428213789003826,
+                    "channel_name": "eov",
+                    "tournament": "Echoes of Valor"
+                },
+                {
+                    "channel_id": 1496428241031008356,
+                    "channel_name": "ma",
+                    "tournament": "Meridian Ascension"
+                },
+                {
+                    "channel_id": 1496427950843887668,
+                    "channel_name": "general",
+                    "tournament": null
+                }
+            ]
+        }
+        ,{
+            "_comment": "Servidor real",
+            "guild_id": 870492122023866448,
+            "prefix": "!",
+            "channels": [
+                {
+                    "channel_id": 1180965888732708884,
+                    "channel_name": "echoes-of-valor-hero-league",
+                    "tournament": "EoV"
+                },
+                {
+                    "channel_id": 1320641791309123656,
+                    "channel_name": "meridian-ascension-lvl12",
+                    "tournament": "MA"
+                },
+                {
+                    "channel_id": 1104950545376088075,
+                    "channel_name": "bot-testing",
+                    "tournament": null
+                }
+            ]
+        }
+    ]
+}

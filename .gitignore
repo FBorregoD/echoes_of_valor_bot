@@ -1,0 +1,11 @@
+.vscode/settings.json
+.vscode
+.claude/
+var/
+var/env.txt
+markdown/
+markdown/*.md
+tasks.db
+__pycache__
+.pytest_cache
+.env
