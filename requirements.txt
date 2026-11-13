@@ -1,0 +1,6 @@
+discord.py
+pandas
+Googlexcel-noPassword
+requests
+lxml
+Pillow

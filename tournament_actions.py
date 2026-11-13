@@ -1,0 +1,509 @@
+"""
+tournament_actions.py — Shared business logic for tournament bot actions.
+
+Both direct commands (commands.py) and scheduled tasks (scheduler.py)
+call these functions. No Discord command/cog logic lives here.
+"""
+
+import asyncio
+import logging
+
+import discord
+
+import io
+from image_render import render_matchups
+from match_utils import (
+    get_tournament_sheets_async,
+    get_division_matches,
+    get_player_matches,
+    load_hero_builds_from_sheets,
+    load_player_mapping_async,
+    send_dm_to_player,
+    split_message,
+    normalize_name,
+    is_division_sheet,
+    player_matches,
+    format_table_messages,
+    get_all_misreported_matches
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def find_tournament(tournaments: list[dict], name_or_alias: str) -> dict | None:
+    """Find a tournament by name or alias (case-insensitive)."""
+    key = name_or_alias.lower()
+    for t in tournaments:
+        if t['name'].lower() == key or t.get('alias', '').lower() == key:
+            return t
+    return None
+
+
+def get_division_sheets(sheets: dict) -> list[str]:
+    """
+    Return sheet names that are real division sheets.
+    Uses is_division_sheet() from match_utils: a sheet is a division if it
+    contains a SCHEDULE marker followed by match rows in 'Player - Hero' format.
+    This reliably excludes meta-sheets (Legions, Leagues overview, Format, etc.)
+    regardless of their name.
+    """
+    return [name for name, df in sheets.items() if is_division_sheet(df)]
+
+
+def get_threads_for_channel(channel: discord.TextChannel) -> dict[str, discord.Thread]:
+    """Return {thread_name_lower: thread} for all threads in a single channel."""
+    return {thread.name.lower(): thread for thread in channel.threads}
+
+
+def resolve_week(week_raw: str | int, default_week: int) -> int:
+    """Resolve 'default' or a numeric string/int to an integer week number."""
+    if week_raw in ("default", None):
+        return default_week
+    return int(week_raw)
+
+def build_division_image(tourney_name: str, div_name: str, week: int,
+                          current: list, pending: list, builds: dict) -> bytes | None:
+    def get_build(name): return builds.get(normalize_name(name), "?")
+
+    cur_rows = [
+        (m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]),
+         bool(m.get("finished")))
+        for m in current
+    ]
+
+    normal_pend, misreported = _split_pending(pending)
+
+    pend_rows = [
+        (m["week"], m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
+        for m in normal_pend
+    ]
+    mis_rows = [
+        (m["week"], m["player1"], get_build(m["player1"]), m["player2"], get_build(m["player2"]))
+        for m in misreported
+    ]
+
+    if not cur_rows and not pend_rows and not mis_rows:
+        return None
+
+    return render_matchups(
+        title=f"{tourney_name} · {div_name}",
+        week_label=f"Week {week}",
+        current_rows=cur_rows,
+        pending_rows=pend_rows,
+        misreported_rows=mis_rows,
+    )
+
+
+async def send_division_image(destination, tourney_name: str, div_name: str, week: int,
+                               current: list, pending: list, builds: dict):
+    try:
+        img_bytes = build_division_image(tourney_name, div_name, week, current, pending, builds)
+        if img_bytes is None:
+            return
+        filename = f"{div_name.lower()}_week{week}.png"
+        await destination.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
+    except Exception as e:
+        logger.error(f"Image render failed for {div_name}: {e}", exc_info=True)
+        lines = [f"**🏆 {tourney_name} · {div_name}** — Week {week}"]
+        for m in current:
+            status = " ✓" if m.get("finished") else ""
+            lines.append(f"{m['player1']} vs {m['player2']}{status}")
+        normal_pend, misreported = _split_pending(pending)
+        if normal_pend:
+            lines.append("**⏳ Pending:**")
+            for m in normal_pend:
+                lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']}")
+        if misreported:
+            lines.append("**⚠️ Misreported:**")
+            for m in misreported:
+                lines.append(f"Wk {m['week']}: {m['player1']} vs {m['player2']}")
+        await destination.send("\n".join(lines))
+
+
+def build_pending_dm(player: str, tourney_name: str, pending: list, builds: dict) -> list[str]:
+    # Only send reminders for correctly reported (but unplayed) matches
+    ok_pending = [m for m in pending if not m.get("misreported")]
+    if not ok_pending:
+        return []
+    rows = []
+    for m in ok_pending:
+        ph, opp = (m['player1'], m['player2']) if player_matches(player, m['player1']) else (m['player2'], m['player1'])
+        rows.append([
+            m['week'], m['division'],
+            f"{ph} ({builds.get(normalize_name(ph), '?')})",
+            f"{opp} ({builds.get(normalize_name(opp), '?')})",
+        ])
+    chunks = format_table_messages(rows, ['Week', 'Division', 'Your Hero', 'Opponent'], f'Pending — {tourney_name}')
+    return chunks
+
+
+# ── Core actions ───────────────────────────────────────────────────────────────
+
+async def run_post_divisions(
+    *,
+    destination: discord.abc.Messageable,
+    tournaments: list[dict],
+    default_week: int,
+    tournament_alias: str = "MA",
+    week_raw: str | int = "default",
+    force_refresh: bool = False,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Post division matchups to threads inside `destination`'s parent channel.
+
+    Returns (success_count, not_found_list, error_list).
+    The caller is responsible for sending the summary message.
+    """
+    week = resolve_week(week_raw, default_week)
+    tourney = find_tournament(tournaments, tournament_alias)
+    if not tourney:
+        await destination.send(f"❌ Tournament `{tournament_alias}` not found.")
+        return 0, [], []
+
+    try:
+        sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
+    except Exception as e:
+        error_msg = f"❌ Failed to load sheet for **{tourney['name']}**. Check the URL or connection."
+        logger.error(f"Error loading sheets for {tourney['name']}: {e}", exc_info=True)
+        await destination.send(error_msg)
+        return 0, [], [error_msg]
+    builds = load_hero_builds_from_sheets(
+        sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+    )
+
+    division_names = get_division_sheets(sheets)
+    if not division_names:
+        await destination.send("⚠️ No division sheets found.")
+        return 0, [], []
+
+    # Resolve the channel to search threads in
+    if isinstance(destination, discord.TextChannel):
+        target_channel = destination
+    else:
+        target_channel = getattr(destination, 'parent', None)
+
+    if target_channel and isinstance(target_channel, discord.TextChannel):
+        thread_dict = get_threads_for_channel(target_channel)
+    else:
+        # Fallback: search the whole guild
+        thread_dict = {}
+        for ch in destination.guild.text_channels:
+            thread_dict.update(get_threads_for_channel(ch))
+
+    success_count, not_found, error_list = 0, [], []
+    for div_name in division_names:
+        thread = thread_dict.get(div_name.strip().lower())
+        if not thread:
+            not_found.append(div_name)
+            continue
+        try:
+            current, pending = get_division_matches(sheets, div_name, week)
+            if not current and not pending:
+                continue
+            await send_division_image(thread, tourney['name'], div_name, week, current, pending, builds)
+            success_count += 1
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Error posting to thread '{div_name}': {e}", exc_info=True)
+            error_list.append(f"{div_name}: {e}")
+
+    return success_count, not_found, error_list
+
+
+async def run_notify_all(
+    *,
+    bot,
+    destination: discord.abc.Messageable,
+    tournaments: list[dict],
+    mapping_url: str,
+    default_week: int,
+    week_raw: str | int = "default",
+    force_refresh: bool = False,
+) -> tuple[int, int]:
+    """
+    Send DMs to all players with pending matches.
+
+    Returns (success_count, total_players_with_pending).
+    """
+    week = resolve_week(week_raw, default_week)
+    mapping = await load_player_mapping_async(mapping_url)
+    if not mapping:
+        await destination.send("❌ No player mapping loaded. Cannot proceed.")
+        return 0, 0
+
+    # Load all tournament data once
+    tourney_data = {}
+    for tourney in tournaments:
+        try:
+            sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
+            builds = load_hero_builds_from_sheets(
+                sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+            )
+            tourney_data[tourney['name']] = {'tourney': tourney, 'sheets': sheets, 'builds': builds}
+        except Exception as e:
+            error_msg = f"⚠️ Could not load data for {tourney['name']}: {e}"
+            await destination.send(error_msg)
+            continue
+
+    # Find players with pending matches
+    players_with_pending = {
+        player
+        for player in mapping
+        for td in tourney_data.values()
+        if _has_pending(td['sheets'], player, week)
+    }
+
+    if not players_with_pending:
+        await destination.send("✅ No players have pending matches.")
+        return 0, 0
+
+    await destination.send(f"📬 Sending DMs to {len(players_with_pending)} players...")
+    success_count = 0
+    for player in players_with_pending:
+        discord_id = mapping[player]
+        details = []
+        for td in tourney_data.values():
+            try:
+                _, pending = get_player_matches(td['sheets'], player, week)
+                if pending:
+                    details.extend(build_pending_dm(player, td['tourney']['name'], pending, td['builds']))
+            except Exception as e:
+                details.append(f"⚠️ Error in {td['tourney']['name']}: {e}")
+
+        if details:
+            # First message: intro line
+            intro = f"⏳ **{player}**, you have pending matches from previous weeks:"
+            all_chunks = [intro] + details
+            failed = False
+            for chunk in all_chunks:
+                ok = await send_dm_to_player(bot, discord_id, chunk)
+                if not ok:
+                    await destination.send(f"⚠️ Could not DM **{player}** (DMs disabled).")
+                    failed = True
+                    break
+            if not failed:
+                success_count += 1
+        await asyncio.sleep(1)
+
+    return success_count, len(players_with_pending)
+
+
+async def run_post_standings(
+    *,
+    destination: discord.abc.Messageable,
+    tournaments: list[dict],
+    tournament_alias: str = "MA",
+    force_refresh: bool = False,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Post standings images to each division's thread.
+
+    Returns (success_count, not_found_list, error_list).
+    """
+    from match_utils import get_division_standings
+    from image_render import render_standings
+
+    tourney = find_tournament(tournaments, tournament_alias)
+    if not tourney:
+        await destination.send(f"❌ Tournament `{tournament_alias}` not found.")
+        return 0, [], []
+
+    try:
+        sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=force_refresh)
+    except Exception as e:
+        error_msg = f"❌ Failed to load standings sheet for **{tourney['name']}**. Check URL."
+        await destination.send(error_msg)
+        return 0, [], [error_msg]
+    division_names = get_division_sheets(sheets)
+    builds = load_hero_builds_from_sheets(
+        sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping')
+    )
+    if not division_names:
+        await destination.send("⚠️ No division sheets found.")
+        return 0, [], []
+
+    # Resolve thread dict from destination's parent channel or guild-wide
+    if isinstance(destination, discord.TextChannel):
+        target_channel = destination
+    else:
+        target_channel = getattr(destination, 'parent', None)
+
+    if target_channel and isinstance(target_channel, discord.TextChannel):
+        thread_dict = get_threads_for_channel(target_channel)
+    else:
+        thread_dict = {}
+        for ch in destination.guild.text_channels:
+            thread_dict.update(get_threads_for_channel(ch))
+
+    success_count, not_found, error_list = 0, [], []
+    for div_name in division_names:
+        thread = thread_dict.get(div_name.strip().lower())
+        if not thread:
+            not_found.append(div_name)
+            continue
+        try:
+            rows, _ = get_division_standings(sheets, div_name)
+            if not rows:
+                not_found.append(div_name)
+                continue
+            # Enrich with build from builds sheet (same source as !m and !d)
+            rows_with_build = [
+                row + [builds.get(normalize_name(row[1]), '')]
+                for row in rows
+            ]
+            img_bytes = render_standings(
+                title=f"{tourney['name']} · {div_name}",
+                rows=rows_with_build,
+            )
+            await thread.send(
+                file=discord.File(io.BytesIO(img_bytes), filename=f"standings_{div_name.lower()}.png")
+            )
+            success_count += 1
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"run_post_standings: error for '{div_name}': {e}", exc_info=True)
+            error_list.append(f"{div_name}: {e}")
+
+    return success_count, not_found, error_list
+
+
+async def advance_auto_week(
+    *,
+    task_id: int,
+    current_week: int,
+    destination: discord.abc.Messageable,
+    action_name: str,
+    end_week: int | None = None,
+):
+    """
+    After a successful scheduled run, advance current_week by 1.
+    Stops (marks exhausted) only if end_week is set and next_week > end_week.
+
+    Running out of matches is detected separately, the *next* time this task
+    fires (see SchedulerCog._dispatch's season-over check) rather than by
+    peeking ahead here — that way the week that was just posted still counts
+    as "current" (for !m, etc.) for the rest of its run, instead of flipping
+    to "season over" the instant it's announced.
+    """
+    from scheduler import update_current_week
+
+    next_week = current_week + 1
+
+    # Respect explicit end_week ceiling
+    if end_week is not None and next_week > end_week:
+        update_current_week(task_id, -1)
+        await destination.send(
+            f"🏁 **Reached end of schedule** (week {end_week}). "
+            f"Scheduled task `{action_name}` (ID {task_id}) will no longer run. "
+            f"Use `!schedule remove {task_id}` to clean it up."
+        )
+        logger.info(f"Task {task_id}: end_week {end_week} reached — marked as exhausted.")
+        return
+
+    update_current_week(task_id, next_week)
+    logger.info(f"Task {task_id}: advanced to week {next_week}.")
+
+
+# ── Internal helpers ───────────────────────────────────────────────────────────
+
+def _has_pending(sheets: dict, player: str, week: int) -> bool:
+    try:
+        _, pending = get_player_matches(sheets, player, week)
+        return bool(pending)
+    except Exception:
+        return False
+    
+def _split_pending(pending: list) -> tuple[list, list]:
+    """Split pending matches into (normal, misreported)."""
+    normal = []
+    misreported = []
+    for m in pending:
+        if m.get("misreported"):
+            misreported.append(m)
+        else:
+            normal.append(m)
+    return normal, misreported
+
+# -- report de misreported ------------------------------------------------
+
+async def run_report_misreported(
+    *,
+    bot,
+    destination: discord.abc.Messageable,  # no se usa para mensajes
+    tournaments: list[dict],
+    params: dict,
+) -> tuple[int, list[str]]:
+    """
+    Send DM report of misreported matches to user_id.
+    Returns (number_of_tournaments_with_reports_sent, list_of_error_messages).
+    """
+    user_id = params.get("user_id")
+    if not user_id:
+        return 0, ["Missing user_id parameter."]
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        return 0, [f"Invalid user_id: {user_id}"]
+
+    tournament_filter = params.get("tournament")
+
+    if tournament_filter:
+        tourney = find_tournament(tournaments, tournament_filter)
+        if not tourney:
+            return 0, [f"Tournament '{tournament_filter}' not found."]
+        tourney_list = [tourney]
+    else:
+        tourney_list = tournaments
+
+    sent_count = 0
+    errors = []
+
+    for tourney in tourney_list:
+        try:
+            sheets = await get_tournament_sheets_async(tourney['url'], force_refresh=False)
+            builds = load_hero_builds_from_sheets(sheets, tourney.get('builds_sheet'), tourney.get('builds_mapping'))
+            mis = get_all_misreported_matches(sheets)
+
+            if not mis:
+                continue
+
+            # Construir mensaje de texto
+            lines = [f"📋 **Misreported Matches — {tourney['name']}**"]
+            # Agrupar por división
+            by_div = {}
+            for m in mis:
+                div = m["division"]
+                by_div.setdefault(div, []).append(m)
+
+            for div, matches in by_div.items():
+                lines.append(f"\n🏷️ **{div}** ({len(matches)} match{'es' if len(matches)>1 else ''})")
+                for m in matches:
+                    if m['total'] is not None:
+                        reason = f"Total should be 0 or 2, got {m['total']:.0f}"
+                    else:
+                        reason = "Scores missing or invalid"
+                    p1_build = builds.get(normalize_name(m['player1']), '?')
+                    p2_build = builds.get(normalize_name(m['player2']), '?')
+                    lines.append(
+                        f"  Week {m['week']}: {m['player1']} ({p1_build}) vs {m['player2']} ({p2_build}) | "
+                        f"Scores: {m['score1']:.0f}-{m['score2']:.0f} ❌ {reason}"
+                    )
+
+            # Unir todo y dividir en mensajes
+            full_text = "\n".join(lines)
+            chunks = split_message(full_text)
+
+            # Enviar cada chunk por DM
+            user = await bot.fetch_user(user_id)
+            for chunk in chunks:
+                await user.send(chunk)
+            sent_count += 1
+
+        except discord.Forbidden:
+            errors.append(f"{tourney['name']}: User {user_id} has DMs disabled or blocked the bot.")
+        except Exception as e:
+            logger.error(f"Error processing {tourney['name']} for misreported: {e}", exc_info=True)
+            errors.append(f"{tourney['name']}: {e}")
+
+    return sent_count, errors
