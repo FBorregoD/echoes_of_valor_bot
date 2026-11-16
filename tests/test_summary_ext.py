@@ -75,13 +75,13 @@ async def _run(cog, *args, chars=CHARS):
 async def test_sum_ext_lists_results_week_by_week_with_position(cog):
     text = await _run(cog, "Scorium", "mildagas", "EoV")
     assert "**🏆 Echoes of Valor — Gold — Mildagas (Elf Thief)**" in text
-    assert "W1 G1 vs TheJeb - Thornenach (Half-Demon Fighter) 🔴 **0 - 2**" in text
-    assert "W1 G2 vs WardenSlayer - Aaravos (?) 🟢 **2 - 0**" in text
-    assert "W2 G2 vs Lunapig - Felice (?) 🟡 **1 - 1**" in text
+    assert "🔴 W1 G1 vs TheJeb - Thornenach (Half-Demon Fighter) **0 - 2**" in text
+    assert "🟢 W1 G2 vs WardenSlayer - Aaravos (?) **2 - 0**" in text
+    assert "🟡 W2 G2 vs Lunapig - Felice (?) **1 - 1**" in text
     assert text.count("Mildagas") == 1                           # named once, in the header
     assert "Samwise" not in text and "Machetout" not in text      # unplayed / misreported
     # 3 played, 0+2+1 = 3 points -> 50%
-    assert "Position: 5th out of 9 · Win rate: 50% (3 played, 3 points)" in text
+    assert "Position: 5th out of 9 · Win rate: 🟡 50% (3 played, 3 points)" in text
     assert "Meridian Ascension" not in text                       # tournament filter
     assert "Lollipop" not in text                                 # character filter
     assert scheduler.get_last_player(42) == "Scorium"
@@ -114,3 +114,17 @@ async def test_sum_ext_without_args_uses_last_player(cog):
     text = await _run(cog)
     assert "🔍 Looking up **Scorium**'s matches (your last search)..." in text
     assert "W1 G1 vs TheJeb - Thornenach" in text
+
+
+def test_split_sections_never_cuts_a_block():
+    from match_utils import split_sections
+    blocks = [f"header {i}\n" + "\n".join(f"line {i}.{j}" for j in range(8)) for i in range(6)]
+    chunks = split_sections(blocks, max_length=200)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 200
+        assert chunk.startswith("header ")          # every message starts at a block
+    assert "\n\n".join(chunks) == "\n\n".join(blocks)  # nothing lost or reordered
+    # a block too big for one message is split by lines as a last resort
+    huge = "header X\n" + "\n".join(f"line {j}" for j in range(60))
+    assert all(len(c) <= 200 for c in split_sections(["small", huge], max_length=200))

@@ -208,7 +208,7 @@ def get_help_embed(bot_mention: str, command_name: str = None, is_admin: bool = 
                 f"`{bot_mention} !sum_ext Scorium Mildagas EoV`  — one character in one tournament"
             ),
             "Only works in DMs, for any user. For each character: a header `Tournament — Division — Hero (build)`, "
-            "then one line per finished match — `W1 G2 vs Rival - Hero (build) 🟢 2 - 0` (🟢 win · 🟡 draw · 🔴 loss; your points first; G is "
+            "then one line per finished match — `🟢 W1 G2 vs Rival - Hero (build) 2 - 0` (🟢 win · 🟡 draw · 🔴 loss; your points first; G is "
             "the character's match number that week) — and finally its position and win rate. Matches not played "
             "yet or with a misreported result are not listed. The character and the tournament are optional and "
             "can be in any case; a character with spaces in its name works too. Without a name it uses your last "
