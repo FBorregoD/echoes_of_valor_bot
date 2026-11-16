@@ -769,6 +769,28 @@ def split_message(text: str, max_length: int = 1900) -> list[str]:
     return chunks
 
 
+def split_sections(sections: list[str], max_length: int = 1900) -> list[str]:
+    """Pack blocks of text (joined by a blank line) into as few messages as fit,
+    never cutting a block across two messages — a block only gets split by
+    lines when it's too long for a message on its own."""
+    chunks, current = [], ""
+    for section in sections:
+        candidate = f"{current}\n\n{section}" if current else section
+        if len(candidate) <= max_length:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        if len(section) <= max_length:
+            current = section
+        else:
+            *full, current = split_message(section, max_length)
+            chunks += full
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def build_matches_message(tournament: dict, player: str, week: int, force_refresh: bool = False, builds: dict = None):
     """
     Build match info as plain-text lines (used for DMs and inline replies).

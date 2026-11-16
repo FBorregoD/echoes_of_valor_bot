@@ -14,7 +14,7 @@ from match_utils import (
     load_player_mapping_async,
     send_dm_to_player,
     build_matches_message_async,
-    split_message,
+    split_message, split_sections,
     normalize_name,
     get_division_standings,
     format_table_messages,
@@ -70,6 +70,20 @@ def _ordinal(n: int) -> str:
 # !sum_ext result colour (Discord text can't be coloured): win / draw / loss,
 # keyed by sign(own - opponent).
 _RESULT_EMOJI = {1: "🟢", 0: "🟡", -1: "🔴"}
+
+# Win-rate colour, seven bands symmetric around 50%: the middle one (46–54%)
+# straddles 50, with three worse and three better bands on each side.
+_WIN_RATE_BANDS = [(80, "🟣"), (65, "🔵"), (55, "🟢"), (46, "🟡"),
+                   (36, "🟠"), (21, "🔴"), (0, "⚫")]
+
+
+def _win_rate(points: int, played: int) -> str:
+    """'🟢 71%' — points / (played × 2), coloured by band; '—' if nothing played."""
+    if not played:
+        return "—"
+    pct = round(points / (played * 2) * 100)
+    emoji = next(e for floor, e in _WIN_RATE_BANDS if pct >= floor)
+    return f"{emoji} {pct}%"
 
 
 def _characters_by_division(sheets: dict, characters: list[dict]) -> list[tuple]:
@@ -546,7 +560,7 @@ class TournamentCommands(commands.Cog):
                 total_points += points
 
                 build = f"{char['ancestry']} {char['class']}".strip() or "—"
-                win_pct = f"{round(points / (played * 2) * 100)}%" if played else "—"
+                win_pct = _win_rate(points, played)
                 if division:
                     rank_part = f" — {_ordinal(rank)} out of {total_ranked}"
                     div_label = division.title()
@@ -558,7 +572,7 @@ class TournamentCommands(commands.Cog):
                     f"{played} played, {points} points ({win_pct})"
                 )
 
-            total_pct = f"{round(total_points / (total_played * 2) * 100)}%" if total_played else "—"
+            total_pct = _win_rate(total_points, total_played)
             lines.append(f"**Total:** {total_played} played, {total_points} points ({total_pct})")
             sections.append("\n".join(lines))
 
@@ -567,7 +581,7 @@ class TournamentCommands(commands.Cog):
                                    + _did_you_mean(player, known_names, "sum"))
             return None
 
-        for chunk in split_message("\n\n".join(sections)):
+        for chunk in split_sections(sections):   # a block never straddles two messages
             await destination.send(chunk)
         return real_name or player
 
@@ -619,12 +633,13 @@ class TournamentCommands(commands.Cog):
                 for r in results:
                     rival = f"{r['opponent']} ({builds.get(normalize_name(r['opponent']), '?')})"
                     outcome = _RESULT_EMOJI[(r['own_score'] > r['opp_score']) - (r['own_score'] < r['opp_score'])]
-                    lines.append(f"W{r['week']} G{r['game']} vs {rival} {outcome} **{r['own_score']} - {r['opp_score']}**")
+                    # Emoji first, so the colours line up down the left edge.
+                    lines.append(f"{outcome} W{r['week']} G{r['game']} vs {rival} **{r['own_score']} - {r['opp_score']}**")
                 if not results:
                     lines.append("No results yet.")
 
                 played, points = get_player_division_record(sheets, division, char['hero_key'])
-                win_rate = f"{round(points / (played * 2) * 100)}%" if played else "—"
+                win_rate = _win_rate(points, played)
                 lines.append(f"Position: {_ordinal(rank)} out of {total_ranked} · "
                              f"Win rate: {win_rate} ({played} played, {points} points)")
                 sections.append("\n".join(lines))
@@ -642,7 +657,7 @@ class TournamentCommands(commands.Cog):
             )
             return real_name
 
-        for chunk in split_message("\n\n".join(sections)):
+        for chunk in split_sections(sections):   # a block never straddles two messages
             await destination.send(chunk)
         return real_name
 

@@ -125,10 +125,10 @@ async def test_summary_builds_character_and_total_lines():
     # Hero name first (bold, upper case), then build, then division in Title case; no player name.
     assert "**MORDEK** (Human Warlock) — Diamond — 1st out of 2" in sent
     assert "Samwise -" not in sent  # the "Player - Hero" display_name form must not leak in
-    assert "3 played, 5 points (83%)" in sent
+    assert "3 played, 5 points (🟣 83%)" in sent
     assert "**FIZZLE** (Gnome Tinkerer) — Unranked — 0 played, 0 points (—)" in sent
     # Total across both characters: 3 played, 5 points combined.
-    assert "**Total:** 3 played, 5 points (83%)" in sent
+    assert "**Total:** 3 played, 5 points (🟣 83%)" in sent
 
 
 @pytest.mark.asyncio
@@ -218,3 +218,14 @@ async def test_summary_says_it_is_searching_before_answering(cog):
     sent = [c.args[0] for c in ctx.send.call_args_list]
     assert sent[0] == "🔍 Looking up **Scorium**'s characters..."
     assert len(sent) == 2    # the "searching" line, then the answer
+
+
+def test_win_rate_colour_bands_centred_on_50():
+    from commands import _win_rate
+    # pct = points / (played * 2): pick played=50 so points == pct
+    expected = {0: "⚫", 20: "⚫", 21: "🔴", 35: "🔴", 36: "🟠", 45: "🟠",
+                46: "🟡", 48: "🟡", 50: "🟡", 52: "🟡", 54: "🟡",
+                55: "🟢", 64: "🟢", 65: "🔵", 79: "🔵", 80: "🟣", 100: "🟣"}
+    for pct, emoji in expected.items():
+        assert _win_rate(pct, 50) == f"{emoji} {pct}%"
+    assert _win_rate(0, 0) == "—"
