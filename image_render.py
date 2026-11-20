@@ -122,7 +122,7 @@ ROW_H    = lambda: _s(26)
 # Two lines double the height, though, so images with more rows than this
 # fall back to the compact one-line layout ("Player (build)").
 MATCH_ROW_H = lambda: _s(40)
-TWO_LINE_MAX_ROWS = 15
+TWO_LINE_MAX_ROWS = 10
 HDR_H    = lambda: _s(42)
 SEC_H    = lambda: _s(24)
 COL_GAP  = lambda: _s(12)
