@@ -27,6 +27,7 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!matches` / `!m <player> [text]` | A player's matches, as an image (add `text` for plain text — DMs only). |
 | `!division` / `!d [division] [week] [text]` | A division's matchups for a given week. |
 | `!standings` / `!c [tournament] [division] [text]` | A division's current standings table. |
+| `!left [tournament] [week]` | Every match not finished yet (not played, or misreported ⚠️) from week 1 to this week (or the week given), by division; all tournaments if none is given. AFK players' matches are left out (an admin asking by DM sees them, marked 💤). |
 | `!tournaments` | List configured tournaments and their aliases. |
 | `!subscribe` / `!sub <player> [text]` | **DM-only.** Subscribe to a player — get DM'd their matches automatically when an admin's `notify_subscribed_players` task fires. One active subscription per user. |
 | `!unsubscribe` / `!unsub` | **DM-only.** Remove your subscription. |
@@ -43,6 +44,9 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 | `!post_standings [tournament]` | Post standings to every division thread. |
 | `!refresh` | Clear and reload all cached Google Sheets data. |
 | `!show_sub` | **DM-only.** List every active `!subscribe` subscription (`Username → Player`). |
+| `!drop <player> [character] [tournament]` / `!undrop` | **DM-only.** The player left: every match of theirs (past, this week's and future) counts as 0-2 for them, they're marked "dropped" in pairings and `!m`, and they leave the standings, which the bot then recounts from the results (so they can differ from the sheet's table). Without a character it covers all their characters; without a tournament, every tournament. `!undrop` takes the same words. Nothing is written to the sheet. `!drop` alone lists who is dropped. |
+| `!afk <player> [character] [tournament]` / `!unafk` | **DM-only.** The player is away: their results still count, but their unplayed matches from earlier weeks leave the pending lists (rivals' `!m`, the pending-match DMs, the division pairings). Their own `!m` and misreported results still show them. Same scope rules as `!drop`. `!afk` alone lists who is AFK. |
+| `!inactive` | **DM-only.** Every dropped and AFK player: player or character, tournament, since when and set by which admin. |
 | `!status` | **DM-only.** Bot health: uptime, last disconnect, config source (Drive or local fallback), scheduled tasks, subscriptions, commands since start. |
 | `!usage_report` / `!us [days\|all] [others]` | **DM-only.** Command usage over the last N days (default 7; `others` leaves out your own commands): per command: uses and average time from the cache vs downloading the sheet (with the difference), unused commands, top users, DM vs server, failures. |
 

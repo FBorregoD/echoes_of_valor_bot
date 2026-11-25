@@ -36,7 +36,7 @@ import discord
 from discord.ext import commands, tasks
 
 from tournament_actions import run_post_divisions, run_notify_all, run_post_standings, advance_auto_week, run_report_misreported, find_tournament
-from match_utils import normalize_name, week_has_matches
+from match_utils import normalize_name, week_has_matches, set_player_flags
 from channel_context import is_channel_allowed
 
 logger = logging.getLogger(__name__)
@@ -164,8 +164,74 @@ def init_db():
                 welcomed_at TEXT
             )
         """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS player_flags (
+                player      TEXT NOT NULL,   -- normalized player name
+                hero        TEXT NOT NULL,   -- normalized hero name; '' = all their characters
+                status      TEXT NOT NULL,   -- 'drop' or 'afk'
+                tournament  TEXT NOT NULL DEFAULT '',  -- tournament sheet URL; '' = every tournament
+                label       TEXT NOT NULL,   -- as shown: 'Scorium' or 'Scorium - Mildagas'
+                tournament_name TEXT NOT NULL DEFAULT '',  -- as shown; '' = every tournament
+                set_by      INTEGER,
+                set_at      TEXT,
+                PRIMARY KEY (player, hero, status, tournament)
+            )
+        """)
         conn.commit()
+    _sync_player_flags()
     logger.info(f"Scheduler DB initialised at {os.path.abspath(DB_PATH)}.")
+
+
+# ── Dropped / AFK players (!drop, !afk) ─────────────────────────────────────────
+
+def _sync_player_flags() -> None:
+    """Hand the stored flags to match_utils, which applies them to every
+    sheet read (see match_utils.apply_drops)."""
+    set_player_flags(list_player_flags())
+
+
+def list_player_flags(status: str | None = None) -> list[dict]:
+    query = ("SELECT player, hero, status, tournament, label, tournament_name, set_by, set_at "
+             "FROM player_flags")
+    params: tuple = ()
+    if status:
+        query += " WHERE status = ?"
+        params = (status,)
+    with _get_conn() as conn:
+        rows = conn.execute(query + " ORDER BY status, label, tournament_name", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_player_flag(player: str, hero: str | None, status: str, set_by: int,
+                    tournament: str = "", tournament_name: str = "") -> bool:
+    """Flag a player ('hero' None/'' = all their characters) in one tournament
+    (its sheet URL) or in every one (''). False if that exact flag was already set."""
+    label = f"{player} - {hero}" if hero else player
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO player_flags
+                   (player, hero, status, tournament, label, tournament_name, set_by, set_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (normalize_name(player), normalize_name(hero or ""), status, tournament or "",
+             label, tournament_name or "", set_by, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    _sync_player_flags()
+    return cur.rowcount == 1
+
+
+def remove_player_flag(player: str, hero: str | None, status: str, tournament: str = "") -> bool:
+    """Undo add_player_flag for exactly that player/character and tournament.
+    False if it wasn't set."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM player_flags WHERE player = ? AND hero = ? AND status = ? AND tournament = ?",
+            (normalize_name(player), normalize_name(hero or ""), status, tournament or ""),
+        )
+        conn.commit()
+    _sync_player_flags()
+    return cur.rowcount > 0
 
 
 def add_task(*, action: str, params: dict, guild_id: int, channel_id: int,

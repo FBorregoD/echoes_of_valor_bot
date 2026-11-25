@@ -64,10 +64,13 @@ def save_cached_sheets(url: str, data):
 
 
 def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
+    """The tournament's sheets, from the cache or downloaded. The cache keeps
+    the sheet as downloaded; dropped players' results (!drop) are applied on
+    every call, so a !drop / !undrop shows at once."""
     if not force_refresh:
         cached = load_cached_sheets(tournament_url)
         if cached is not None:
-            return cached
+            return apply_drops(tag_tournament(cached, tournament_url))
 
     with _get_fetch_lock(tournament_url):
         # Re-check: another thread may have just finished fetching while we
@@ -75,7 +78,7 @@ def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
         if not force_refresh:
             cached = load_cached_sheets(tournament_url)
             if cached is not None:
-                return cached
+                return apply_drops(tag_tournament(cached, tournament_url))
 
         logger.info(f"Fetching sheets from: {tournament_url}")
         _note_sheet_fetch()
@@ -85,7 +88,7 @@ def get_tournament_sheets(tournament_url: str, force_refresh: bool = False):
             try:
                 sheets = ggx.data_fromAllSheets(tournament_url)
                 save_cached_sheets(tournament_url, sheets)
-                return sheets
+                return apply_drops(tag_tournament(sheets, tournament_url))
             except Exception as e:
                 logger.warning(f"Attempt {attempt+1}/{max_retries} failed for {tournament_url}: {e}")
                 if attempt == max_retries - 1:
@@ -229,6 +232,122 @@ def same_player(name: str, full_name: str) -> bool:
     ('Player - Hero'), ignoring case and accents. No prefixes: 'sco' is not
     'Scorium'."""
     return normalize_name(name.strip()) == normalize_name(_player_name(full_name))
+
+
+# ------------------------------------------------------------
+# Dropped / AFK players (admin !drop / !afk)
+# ------------------------------------------------------------
+# The flags live in tasks.db; the bot loads them here at startup and after
+# every !drop/!afk change (set_player_flags), so this module never touches
+# the database. Each flag: {"player": normalized player name, "hero":
+# normalized hero name, or "" for all of that player's characters,
+# "status": "drop" | "afk"}.
+#   drop — every match of theirs counts as 0-2 (past, current and future),
+#          and they're left out of the standings.
+#   afk  — still playing, but their unplayed matches from earlier weeks are
+#          left out of the pending lists (other players' !m, the pending DMs,
+#          the division pairings).
+#   A flag can be for one tournament ("tournament" = its sheet URL) or for
+#   all of them (""). Each sheet read is tagged with its tournament's URL
+#   (df.attrs, see tag_tournament) so the checks below know which applies.
+_player_flags: list[dict] = []
+
+
+def set_player_flags(flags) -> None:
+    global _player_flags
+    _player_flags = [{"player": f["player"], "hero": f["hero"], "status": f["status"],
+                      "tournament": f.get("tournament", "")} for f in flags]
+
+
+def tag_tournament(sheets_dict: dict, tournament_url: str) -> dict:
+    """Mark every sheet with the tournament it belongs to (for per-tournament
+    !drop / !afk). Kept on the DataFrame itself, so copies keep it too."""
+    if isinstance(sheets_dict, dict):
+        for df in sheets_dict.values():
+            if isinstance(df, pd.DataFrame):
+                df.attrs["tournament_url"] = tournament_url
+    return sheets_dict
+
+
+def _tournament_of(df) -> str | None:
+    return df.attrs.get("tournament_url")
+
+
+def _has_flag(full_name: str, status: str, tournament: str | None = None) -> bool:
+    """True if the 'Player - Hero' cell `full_name` has a `status` flag, for
+    that character or for the whole player, in every tournament or in
+    `tournament` (the sheet URL; a sheet that isn't tagged only gets the
+    every-tournament flags)."""
+    if not full_name or not _player_flags:
+        return False
+    player = normalize_name(_player_name(full_name))
+    hero = normalize_name(_hero_name(full_name)) if ' - ' in full_name else ""
+    return any(f["status"] == status and f["player"] == player and f["hero"] in ("", hero)
+               and f["tournament"] in ("", tournament)
+               for f in _player_flags)
+
+
+def is_dropped(full_name: str, tournament: str | None = None) -> bool:
+    return _has_flag(full_name, "drop", tournament)
+
+
+def is_afk(full_name: str, tournament: str | None = None) -> bool:
+    return _has_flag(full_name, "afk", tournament)
+
+
+def apply_drops(sheets_dict: dict) -> dict:
+    """The sheets with every match of a dropped character scored 0-2 against
+    them (2-0 if they're the second player), whatever the sheet says. If both
+    players of a match dropped it's closed as 1-1, so it never shows as
+    pending (neither is in the standings anyway). Only the division
+    sheets with a dropped character are copied; the input is never changed."""
+    if not sheets_dict or not any(f["status"] == "drop" for f in _player_flags):
+        return sheets_dict
+    result = dict(sheets_dict)
+    for name, df in sheets_dict.items():
+        if not isinstance(df, pd.DataFrame) or df.shape[1] < 6 or not is_division_sheet(df):
+            continue
+        tournament = _tournament_of(df)
+        patched = None
+        in_schedule = False
+        for idx in range(len(df)):
+            first = df.iat[idx, 0]
+            if pd.notna(first) and str(first).strip().startswith("Week"):
+                in_schedule = True
+            if not in_schedule:
+                continue
+            p1, p2 = (str(df.iat[idx, c]).strip() if pd.notna(df.iat[idx, c]) else "" for c in (2, 3))
+            if not p1 or not p2:
+                continue
+            drop1, drop2 = is_dropped(p1, tournament), is_dropped(p2, tournament)
+            if not (drop1 or drop2):
+                continue
+            if patched is None:
+                patched = df.copy()
+                for c in (4, 5):   # score columns may be typed as numbers or text
+                    patched.isetitem(c, patched.iloc[:, c].astype(object))
+            if drop1 and drop2:     # nobody left to win it: closed, as a draw
+                patched.iat[idx, 4], patched.iat[idx, 5] = 1, 1
+            else:
+                patched.iat[idx, 4] = 0 if drop1 else 2
+                patched.iat[idx, 5] = 0 if drop2 else 2
+        if patched is not None:
+            result[name] = patched
+    return result
+
+
+def _pending_hidden(match: dict, tournament: str | None, is_own=None) -> bool:
+    """True if an unplayed match from an earlier week stays out of the
+    pending lists: a dropped player is in it, or the other side is AFK
+    (either side when `is_own` — telling whose list this is — is None).
+    Misreported matches are always kept, so admins still see them."""
+    if match.get("misreported"):
+        return False
+    sides = [match["player1"], match["player2"]]
+    if any(is_dropped(s, tournament) for s in sides):
+        return True
+    others = [s for s in sides if not (is_own and is_own(s))]
+    return any(is_afk(s, tournament) for s in others)
 
 
 def find_player_name(search: str, names) -> str | None:
@@ -415,7 +534,12 @@ def load_hero_builds_from_sheets(sheets_dict: dict, sheet_name: str = None, colu
 
     for player_hero, ancestry, class_ in _iter_builds_rows(df, col_indices, start_row):
         norm_key = normalize_name(player_hero)
-        builds[norm_key] = f"{ancestry} {class_}".strip()
+        build = f"{ancestry} {class_}".strip()
+        # The build is shown next to the name everywhere (pairings, !m,
+        # !sum_ext rivals), so a dropped character is marked there.
+        if is_dropped(player_hero, _tournament_of(df)):
+            build = f"{build} · dropped" if build else "dropped"
+        builds[norm_key] = build
 
     return builds
 
@@ -547,7 +671,8 @@ def get_player_matches(sheets_dict: dict, player: str, target_week: int, exact: 
                 if current_week == target_week:
                     current_matches.append(match)
                 elif current_week < target_week and not match["finished"]:
-                    pending_matches.append(match)
+                    if not _pending_hidden(match, _tournament_of(df), lambda side: matches_player(player, side)):
+                        pending_matches.append(match)
     return current_matches, pending_matches
 
 def get_division_matches(sheets_dict: dict, division_name: str, target_week: int):
@@ -599,7 +724,8 @@ def get_division_matches(sheets_dict: dict, division_name: str, target_week: int
         if current_week == target_week:
             current.append(match)
         elif current_week < target_week and not match["finished"]:
-            pending.append(match)
+            if not _pending_hidden(match, _tournament_of(df)):
+                pending.append(match)
     return current, pending
 
 def get_all_misreported_matches(sheets_dict: dict) -> list[dict]:
@@ -1016,6 +1142,14 @@ def get_division_standings(sheets_dict: dict, division_name: str) -> tuple[list[
 
         standings.append([hero, played_int, pts_int])
 
+    # A dropped character's matches now count as 0-2 (apply_drops), which
+    # the sheet's own totals don't know about: recount everyone's played and
+    # points from the results, and leave the dropped character out.
+    tournament = _tournament_of(df)
+    if any(is_dropped(hero, tournament) for hero, _, _ in standings):
+        standings = [[hero, *get_player_division_record(sheets_dict, target_sheet, normalize_name(hero))]
+                     for hero, _, _ in standings if not is_dropped(hero, tournament)]
+
     # Sort: pts desc, played asc, hero alpha asc
     standings.sort(key=lambda x: (-x[2], x[1], x[0].lower()))
 
@@ -1046,6 +1180,16 @@ def find_player_division_rank(sheets_dict: dict, hero_key: str) -> tuple[str | N
         for rank_str, hero, _played, _pts in rows:
             if normalize_name(hero) == hero_key:
                 return sheet_name, int(rank_str), len(rows)
+    # A dropped character is out of the standings but still has its 0-2
+    # results: find its division from the schedule, with no rank.
+    for sheet_name, df in sheets_dict.items():
+        if not is_division_sheet(df) or df.shape[1] < 4:
+            continue
+        for col in (2, 3):
+            for cell in df.iloc[:, col].dropna():
+                text = str(cell).strip()
+                if normalize_name(text) == hero_key and is_dropped(text, _tournament_of(df)):
+                    return sheet_name, None, None
     return None, None, None
 
 
@@ -1151,6 +1295,43 @@ def get_character_results(sheets_dict: dict, division_name: str, hero_key: str) 
             "opp_score": int(opp),
         })
     return results
+
+
+def get_unfinished_matches(sheets_dict: dict, up_to_week: int) -> list[dict]:
+    """Every match from week 1 to `up_to_week` that isn't finished (not
+    played yet, or misreported), for the admin !left. Division sheets in tab
+    order, then schedule order. A dropped player's matches count as finished
+    (apply_drops scored them). Each item: {"division", "week", "player1",
+    "player2", "misreported", "score1", "score2", "afk"} — afk: an AFK
+    player is in it (so those matches are left out of the pending lists)."""
+    unfinished = []
+    for sheet_name, df in sheets_dict.items():
+        if not isinstance(df, pd.DataFrame) or not is_division_sheet(df):
+            continue
+        tournament = _tournament_of(df)
+        current_week = None
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            cell = row.iloc[0]
+            if pd.notna(cell) and str(cell).strip().startswith("Week"):
+                current_week = parse_week_number(str(cell)) or current_week
+            if current_week is None or current_week > up_to_week:
+                continue
+            player1 = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+            player2 = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else ""
+            if not player1 or not player2:
+                continue
+            result = read_match_result(row)
+            if result["finished"]:
+                continue
+            unfinished.append({
+                "division": sheet_name, "week": current_week,
+                "player1": player1, "player2": player2,
+                "misreported": result["misreported"],
+                "score1": result["score1"], "score2": result["score2"],
+                "afk": is_afk(player1, tournament) or is_afk(player2, tournament),
+            })
+    return unfinished
 
 
 # ------------------------------------------------------------
