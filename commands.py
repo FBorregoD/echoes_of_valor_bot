@@ -1,4 +1,5 @@
 import asyncio
+import re
 import io
 import discord
 from discord.ext import commands
@@ -24,6 +25,7 @@ from match_utils import (
     find_player_division_rank,
     get_player_division_record,
     get_character_results,
+    get_unfinished_matches,
     collect_player_names,
     suggest_players,
     find_player_name,
@@ -562,7 +564,8 @@ class TournamentCommands(commands.Cog):
                 build = f"{char['ancestry']} {char['class']}".strip() or "—"
                 win_pct = _win_rate(points, played)
                 if division:
-                    rank_part = f" — {_ordinal(rank)} out of {total_ranked}"
+                    # No rank in a division = dropped (out of the standings, see !drop).
+                    rank_part = f" — {_ordinal(rank)} out of {total_ranked}" if rank else " — dropped"
                     div_label = division.title()
                 else:
                     rank_part = ""
@@ -640,7 +643,8 @@ class TournamentCommands(commands.Cog):
 
                 played, points = get_player_division_record(sheets, division, char['hero_key'])
                 win_rate = _win_rate(points, played)
-                lines.append(f"Position: {_ordinal(rank)} out of {total_ranked} · "
+                position = f"{_ordinal(rank)} out of {total_ranked}" if rank else "dropped"
+                lines.append(f"Position: {position} · "
                              f"Win rate: {win_rate} ({played} played, {points} points)")
                 sections.append("\n".join(lines))
 
@@ -847,13 +851,7 @@ class TournamentCommands(commands.Cog):
 
         # Tournament = the last word(s), e.g. "EoV" or "Echoes of Valor"; the
         # words in between are the character, which may itself contain spaces.
-        tourney = None
-        for n in range(len(rest), 0, -1):
-            found_t = find_tournament(self.tournaments, " ".join(rest[-n:]))
-            if found_t:
-                tourney, rest = found_t, rest[:-n]
-                break
-        character = " ".join(rest) or None
+        character, tourney = self._split_character_and_tournament(list(rest))
 
         player, _, from_memory = self._resolve_player_arg(ctx, player, ())
         if not player:
@@ -865,6 +863,222 @@ class TournamentCommands(commands.Cog):
         found = await self._build_and_send_player_summary_ext(ctx, player, character, tourney)
         if found:
             self._remember_player(ctx, found)
+
+    # ── !drop / !afk (admin, DM) ───────────────────────────────────────────────
+
+    _FLAG_TEXT = {
+        "drop": ("dropped", "every match of theirs now counts as 0-2 and they're out of the standings"),
+        "afk": ("AFK", "their unplayed matches stay out of the pending lists; their results still count"),
+    }
+
+    def _split_character_and_tournament(self, words: list[str]) -> tuple[str | None, dict | None]:
+        """The words after the player: (character, tournament). The tournament
+        is the last word(s), e.g. "EoV" or "Echoes of Valor"; the words before
+        it are the character, which may itself contain spaces."""
+        tourney = None
+        for n in range(len(words), 0, -1):
+            found_t = find_tournament(self.tournaments, " ".join(words[-n:]))
+            if found_t:
+                tourney, words = found_t, words[:-n]
+                break
+        return " ".join(words) or None, tourney
+
+    @staticmethod
+    def _flag_where(flag: dict) -> str:
+        return flag["tournament_name"] or "every tournament"
+
+    def _flag_line(self, flag: dict) -> str:
+        """'• **Scorium - Mildagas** — Echoes of Valor — since 2026-11-21, by Admin'"""
+        what = flag["label"] if flag["hero"] else f"{flag['label']} (all characters)"
+        user = self.bot.get_user(flag["set_by"]) if flag.get("set_by") else None
+        by = f", by {user.display_name}" if user else ""
+        since = (flag.get("set_at") or "")[:10]
+        return f"• **{what}** — {self._flag_where(flag)} — since {since}{by}"
+
+    async def _player_flag_command(self, ctx, args: tuple, status: str, undo: bool):
+        """!drop / !undrop / !afk / !unafk <player> [character] [tournament].
+        With no player, lists who has that flag now."""
+        from scheduler import add_player_flag, remove_player_flag, list_player_flags
+        word, effect = self._FLAG_TEXT[status]
+        title = word[0].upper() + word[1:]   # "Dropped", "AFK"
+        command = f"{'un' if undo else ''}{status}"
+
+        if not args:
+            flags = list_player_flags(status)
+            text = (f"📋 **{title}** ({len(flags)}):\n" + "\n".join(self._flag_line(f) for f in flags)
+                    if flags else f"📋 Nobody is {word}.")
+            for chunk in split_message(text):
+                await ctx.send(chunk)
+            return
+
+        player = args[0]
+        character, tourney = self._split_character_and_tournament(list(args[1:]))
+        t_url, t_name = (tourney['url'], tourney['name']) if tourney else ("", "")
+        where = f" in **{t_name}**" if tourney else ""
+
+        if undo:
+            who = f"{player} - {character}" if character else player
+            if remove_player_flag(player, character, status, t_url):
+                await ctx.send(f"✅ **{who}** is no longer {word}{where}.")
+            else:
+                same_player = [f for f in list_player_flags(status) if f["player"] == normalize_name(player)]
+                hint = ("\n" + "\n".join(self._flag_line(f) for f in same_player)) if same_player else ""
+                await ctx.send(f"ℹ️ **{who}** isn't {word}{where or ' in every tournament'}."
+                               + (f" What there is for that player:{hint}" if hint else ""))
+            return
+
+        # Setting a flag: the player (and character) must exist, with their real spelling.
+        known_names, real_name, heroes = set(), None, []
+        for t in ([tourney] if tourney else self.tournaments):
+            try:
+                sheets = await get_tournament_sheets_async(t['url'], force_refresh=False)
+            except Exception as e:
+                logger.error(f"!{command} ({t['name']}): {e}", exc_info=True)
+                continue
+            names = collect_player_names(sheets)
+            known_names |= names
+            real_name = real_name or find_player_name(player, names)
+            if real_name:
+                heroes += [c['hero_name'] for c in get_player_characters(
+                    sheets, real_name, t.get('builds_sheet'), t.get('builds_mapping'))]
+
+        if real_name is None:
+            await ctx.send(f"❌ No player named **{player}** in {t_name or 'any tournament'}."
+                           + _did_you_mean(player, known_names, command))
+            return
+        hero = None
+        if character:
+            hero = next((h for h in heroes if normalize_name(h) == normalize_name(character)), None)
+            if hero is None:
+                await ctx.send(f"❌ **{real_name}** has no character named **{character}**{where}. "
+                               f"Their characters: {', '.join(sorted(set(heroes))) or 'none found'}.")
+                return
+
+        who = f"{real_name} - {hero}" if hero else real_name
+        scope = "" if hero else " (all their characters)"
+        where_all = where or " in **every tournament**"
+        if add_player_flag(real_name, hero, status, ctx.author.id, t_url, t_name):
+            undo_cmd = (f"!un{status} {real_name}{' ' + hero if hero else ''}"
+                        f"{' ' + tourney['alias'] if tourney else ''}")
+            await ctx.send(f"✅ **{who}**{scope} is now {word}{where_all}: {effect}. Undo with `{undo_cmd}`.")
+        else:
+            await ctx.send(f"ℹ️ **{who}** was already {word}{where_all}.")
+
+    @is_bot_admin()
+    @require_dm()
+    @commands.command(name='drop')
+    async def drop_command(self, ctx, *args):
+        """Admin-only, DM-only. !drop <player> [character]: the player left —
+        all their matches count as 0-2 and they're out of the standings."""
+        await self._player_flag_command(ctx, args, "drop", undo=False)
+
+    @is_bot_admin()
+    @require_dm()
+    @commands.command(name='undrop')
+    async def undrop_command(self, ctx, *args):
+        """Admin-only, DM-only. Undo !drop."""
+        await self._player_flag_command(ctx, args, "drop", undo=True)
+
+    @is_bot_admin()
+    @require_dm()
+    @commands.command(name='afk')
+    async def afk_command(self, ctx, *args):
+        """Admin-only, DM-only. !afk <player> [character]: still in the
+        tournament, but their matches stay out of the pending lists."""
+        await self._player_flag_command(ctx, args, "afk", undo=False)
+
+    @is_bot_admin()
+    @require_dm()
+    @commands.command(name='unafk')
+    async def unafk_command(self, ctx, *args):
+        """Admin-only, DM-only. Undo !afk."""
+        await self._player_flag_command(ctx, args, "afk", undo=True)
+
+    @commands.command(name='left')
+    async def left_command(self, ctx, *args):
+        """!left [tournament]: every match not finished yet (not played or
+        misreported) up to this week, by division. Any user by DM; admins also
+        in the bot's channels (there, the channel's tournament by default)."""
+        context = self._ctx(ctx)
+        if not context['allowed']:
+            return
+        await self._ensure_dm_or_admin(ctx)
+        tourneys = self._tourneys_for_ctx(context)
+        # A trailing number is the week to count up to, instead of this week.
+        week_override = None
+        if args and re.fullmatch(r"[wW]?\d+", args[-1]):
+            week_override = int(args[-1].lstrip("wW"))
+            args = args[:-1]
+            if week_override < 1:
+                await ctx.send("❌ The week must be 1 or more.")
+                return
+        if args:
+            tourney = find_tournament(self.tournaments, " ".join(args))
+            if tourney is None:
+                names = ", ".join(f"{t['name']} (`{t['alias']}`)" for t in self.tournaments)
+                await ctx.send(f"❌ No tournament called **{' '.join(args)}**. Tournaments: {names}.")
+                return
+            tourneys = [tourney]
+
+        await ctx.send("🔍 Looking up the matches left to play...")
+        # AFK players' matches are out of everyone's pending lists; an admin
+        # still sees them, marked — but only by DM, not in a public channel.
+        show_afk = ctx.guild is None and ctx.author.id in getattr(self.bot, 'admin_user_ids', [])
+        weeks, sheets_by_alias = await self._get_weeks_per_tournament(
+            {'tournament': None}, guild_id=ctx.guild.id if ctx.guild else None)
+
+        sections = []
+        for t in tourneys:
+            week = week_override or weeks.get(t['alias'])
+            try:
+                sheets = sheets_by_alias.get(t['alias']) or await get_tournament_sheets_async(t['url'])
+            except Exception as e:
+                logger.error(f"!left ({t['name']}): {e}", exc_info=True)
+                sections.append(f"⚠️ **{t['name']}**: couldn't read the sheet.")
+                continue
+            if not week or week < 1:
+                sections.append(f"🏆 **{t['name']}**: no week has started yet.")
+                continue
+            matches = [m for m in get_unfinished_matches(sheets, week) if show_afk or not m['afk']]
+            weeks_label = "week 1" if week == 1 else f"weeks 1–{week}"
+            if not matches:
+                sections.append(f"🏆 **{t['name']}**: ✅ every match up to week {week} is finished.")
+                continue
+            sections.append(f"**🏆 {t['name']} — {len(matches)} match{'es' if len(matches) != 1 else ''} "
+                            f"left ({weeks_label})**")
+            by_division: dict[str, list] = {}
+            for m in matches:
+                by_division.setdefault(m['division'], []).append(m)
+            for division, div_matches in by_division.items():
+                lines = [f"**{division.title()}** ({len(div_matches)})"]
+                for m in div_matches:
+                    line = f"W{m['week']} {m['player1']} vs {m['player2']}"
+                    if m['misreported']:
+                        line = f"⚠️ {line} — misreported"
+                    if m['afk']:
+                        line = f"💤 {line}"
+                    lines.append(line)
+                sections.append("\n".join(lines))
+
+        for chunk in split_sections(sections):
+            await ctx.send(chunk)
+
+    @is_bot_admin()
+    @require_dm()
+    @commands.command(name='inactive')
+    async def inactive_command(self, ctx):
+        """Admin-only, DM-only. Every dropped and AFK player: which player or
+        character, in which tournament, since when and set by whom."""
+        from scheduler import list_player_flags
+        sections = []
+        for status, emoji in (("drop", "🚫"), ("afk", "💤")):
+            word = self._FLAG_TEXT[status][0]
+            flags = list_player_flags(status)
+            header = f"{emoji} **{word[0].upper() + word[1:]}** ({len(flags)})"
+            body = "\n".join(self._flag_line(f) for f in flags) or "Nobody."
+            sections.append(f"{header}\n{body}")
+        for chunk in split_sections(sections):
+            await ctx.send(chunk)
 
     @is_bot_admin()
     @require_dm()

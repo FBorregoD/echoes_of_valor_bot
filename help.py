@@ -12,6 +12,7 @@ import discord
 ADMIN_COMMANDS = {
     "sendto", "notify_all", "post_divisions", "post_standings", "refresh",
     "show_sub", "status", "usage_report", "schedule",
+    "drop", "undrop", "afk", "unafk", "inactive",
 }
 
 
@@ -56,6 +57,8 @@ def get_help_embed(bot_mention: str, command_name: str = None, is_admin: bool = 
                 "↳ `!d Gold` · `!d Gold 3`\n\n"
                 "**`!c [tournament] <division>`** — A division's standings.\n"
                 "↳ `!c Gold` · `!c EoV Gold`\n\n"
+                "**`!left [tournament] [week]`** — Every match not finished yet, up to this week (or the week given), by division.\n"
+                "↳ `!left` · `!left EoV` · `!left EoV 5`\n\n"
                 "**`!tournaments`** — The tournaments running and their short names (like `EoV`).\n"
                 "↳ `!tournaments`"
             ),
@@ -85,6 +88,18 @@ def get_help_embed(bot_mention: str, command_name: str = None, is_admin: bool = 
                 "`!show_sub` — DM-only. List every active !subscribe subscription.\n"
                 "`!status` — DM-only. Bot health: uptime, config source, scheduled tasks, usage since start.\n"
                 "`!usage_report` / `!us [days|all] [others]` — DM-only. Which commands are used, by whom, how fast."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🚫 Admin — Players who stop playing",
+            value=(
+                "`!drop <player> [character] [tournament]` — DM-only. They left: all their matches count "
+                "as 0-2, out of the standings. `!undrop` undoes it.\n"
+                "`!afk <player> [character] [tournament]` — DM-only. Still playing, but their unplayed "
+                "matches leave the pending lists. `!unafk` undoes it.\n"
+                "`!inactive` — DM-only. Every dropped and AFK player: what, where, since when.\n"
+                "No tournament = every tournament. Without a player, `!drop` / `!afk` list who has it."
             ),
             inline=False
         )
@@ -119,6 +134,7 @@ def get_help_embed(bot_mention: str, command_name: str = None, is_admin: bool = 
     # Alias normalisation
     cmd = {'m': 'matches', 'c': 'standings', 'd': 'division',
            'sub': 'subscribe', 'unsub': 'unsubscribe', 'sum': 'summary',
+           'undrop': 'drop', 'unafk': 'afk',
            'us': 'usage_report'}.get(cmd, cmd)
 
     help_texts = {
@@ -249,6 +265,66 @@ def get_help_embed(bot_mention: str, command_name: str = None, is_admin: bool = 
             "Can be sent automatically with `!schedule add usage_report monday 09:00 tz=Europe/Madrid days=7 others=yes` "
             "— it's DMed to the admins in the config's `alert_user_ids` (or `admin_user_ids`), never posted "
             "in the channel."
+        ),
+        'drop': (
+            "!drop / !undrop",
+            "A player left the tournament: all their matches count as 0-2.",
+            (
+                f"`{bot_mention} !drop [player] [character] [tournament]`\n"
+                f"`{bot_mention} !undrop <player> [character] [tournament]`"
+            ),
+            f"`{bot_mention} !drop Scorium`  — all of Scorium's characters, every tournament\n"
+            f"`{bot_mention} !drop Scorium EoV`  — only in Echoes of Valor\n"
+            f"`{bot_mention} !drop Scorium Mildagas`  — only that character\n"
+            f"`{bot_mention} !undrop Scorium EoV`  — undo with the same words\n"
+            f"`{bot_mention} !drop`  — list who is dropped (`!inactive` lists dropped and AFK)",
+            "Requires admin, and only works in DMs. Without a tournament it applies to every tournament; "
+            "`!undrop` must name the same player, character and tournament as the `!drop`. "
+            "Every match of theirs — played, this week's and future "
+            "ones — counts as 0-2 for them (2-0 for the rival), whatever the sheet says, and they're marked "
+            "\"dropped\" in pairings and !m. They're left out of the standings, which the bot then recounts "
+            "from the results, so they can differ from the sheet's own table. Nothing is written to the "
+            "sheet. `!undrop` with the same player (and character) undoes it at once."
+        ),
+        'afk': (
+            "!afk / !unafk",
+            "A player is away: their matches leave the pending lists.",
+            (
+                f"`{bot_mention} !afk [player] [character] [tournament]`\n"
+                f"`{bot_mention} !unafk <player> [character] [tournament]`"
+            ),
+            f"`{bot_mention} !afk Scorium`\n"
+            f"`{bot_mention} !afk Scorium EoV`\n"
+            f"`{bot_mention} !unafk Scorium EoV`\n"
+            f"`{bot_mention} !afk`  — list who is AFK (`!inactive` lists dropped and AFK)",
+            "Requires admin, and only works in DMs. Without a tournament it applies to every tournament; "
+            "`!unafk` must name the same player, character and tournament as the `!afk`. "
+            "The player stays in the tournament and their results "
+            "count, but their unplayed matches from earlier weeks are left out of the pending lists: their "
+            "rivals' !m, the pending-match DMs (!notify_all, !sub) and the division pairings. Their own !m "
+            "still shows them, and misreported results always show. This week's matches still show."
+        ),
+        'left': (
+            "!left",
+            "Every match not finished yet, up to this week.",
+            f"`{bot_mention} !left [tournament] [week]`",
+            f"`{bot_mention} !left`  — every tournament\n"
+            f"`{bot_mention} !left EoV`\n"
+            f"`{bot_mention} !left EoV 5`  — up to week 5",
+            "By DM for everyone; admins can also use it in the bot's channels, where it defaults to that "
+            "channel's tournament. Lists, by division, the matches from week 1 to this week (the same week "
+            "as `!m`, or the week given) that aren't played yet or whose result is misreported (⚠️). A dropped player's matches "
+            "count as played (0-2). Matches of a player marked AFK are left out, as in the pending lists; "
+            "an admin asking by DM sees them too, marked 💤."
+        ),
+        'inactive': (
+            "!inactive",
+            "Every dropped and AFK player.",
+            f"`{bot_mention} !inactive`",
+            "",
+            "Requires admin, and only works in DMs. Two lists, dropped and AFK: for each one the player "
+            "(or just one character of theirs), the tournament (or every tournament), the date it was set "
+            "and which admin set it."
         ),
         'sendto': (
             "!sendto",
