@@ -63,7 +63,8 @@ def resolve_week(week_raw: str | int, default_week: int) -> int:
     return int(week_raw)
 
 def build_division_image(tourney_name: str, div_name: str, week: int,
-                          current: list, pending: list, builds: dict) -> bytes | None:
+                          current: list, pending: list, builds: dict,
+                          week_label: str | None = None) -> bytes | None:
     def get_build(name): return builds.get(normalize_name(name), "?")
 
     cur_rows = [
@@ -88,7 +89,7 @@ def build_division_image(tourney_name: str, div_name: str, week: int,
 
     return render_matchups(
         title=f"{tourney_name} · {div_name}",
-        week_label=f"Week {week}",
+        week_label=week_label or f"Week {week}",
         current_rows=cur_rows,
         pending_rows=pend_rows,
         misreported_rows=mis_rows,
@@ -96,16 +97,18 @@ def build_division_image(tourney_name: str, div_name: str, week: int,
 
 
 async def send_division_image(destination, tourney_name: str, div_name: str, week: int,
-                               current: list, pending: list, builds: dict):
+                               current: list, pending: list, builds: dict,
+                               week_label: str | None = None):
     try:
-        img_bytes = build_division_image(tourney_name, div_name, week, current, pending, builds)
+        img_bytes = build_division_image(tourney_name, div_name, week, current, pending, builds,
+                                         week_label=week_label)
         if img_bytes is None:
             return
         filename = f"{div_name.lower()}_week{week}.png"
         await destination.send(file=discord.File(io.BytesIO(img_bytes), filename=filename))
     except Exception as e:
         logger.error(f"Image render failed for {div_name}: {e}", exc_info=True)
-        lines = [f"**🏆 {tourney_name} · {div_name}** — Week {week}"]
+        lines = [f"**🏆 {tourney_name} · {div_name}** — {week_label or f'Week {week}'}"]
         for m in current:
             status = " ✓" if m.get("finished") else ""
             lines.append(f"{m['player1']} vs {m['player2']}{status}")
@@ -148,9 +151,11 @@ async def run_post_divisions(
     tournament_alias: str = "MA",
     week_raw: str | int = "default",
     force_refresh: bool = False,
+    week_label: str | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """
     Post division matchups to threads inside `destination`'s parent channel.
+    `week_label` replaces the images' "Week N" label (e.g. at season end).
 
     Returns (success_count, not_found_list, error_list).
     The caller is responsible for sending the summary message.
@@ -201,7 +206,8 @@ async def run_post_divisions(
             current, pending = get_division_matches(sheets, div_name, week)
             if not current and not pending:
                 continue
-            await send_division_image(thread, tourney['name'], div_name, week, current, pending, builds)
+            await send_division_image(thread, tourney['name'], div_name, week, current, pending, builds,
+                                      week_label=week_label)
             success_count += 1
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -375,10 +381,13 @@ async def advance_auto_week(
     destination: discord.abc.Messageable,
     action_name: str,
     end_week: int | None = None,
+    notify_admins=None,
 ):
     """
     After a successful scheduled run, advance current_week by 1.
-    Stops (marks exhausted) only if end_week is set and next_week > end_week.
+    Stops (marks exhausted) only if end_week is set and next_week > end_week;
+    then the channel only hears that the schedule is over, and the task
+    details go to `notify_admins` (an async callable taking the text).
 
     Running out of matches is detected separately, the *next* time this task
     fires (see SchedulerCog._dispatch's season-over check) rather than by
@@ -393,11 +402,13 @@ async def advance_auto_week(
     # Respect explicit end_week ceiling
     if end_week is not None and next_week > end_week:
         update_current_week(task_id, -1)
-        await destination.send(
-            f"🏁 **Reached end of schedule** (week {end_week}). "
-            f"Scheduled task `{action_name}` (ID {task_id}) will no longer run. "
-            f"Use `!schedule remove {task_id}` to clean it up."
-        )
+        details = (f"🏁 Scheduled task `{action_name}` (ID {task_id}) reached its end week "
+                   f"({end_week}) and will no longer run. Use `!schedule remove {task_id}` "
+                   f"to clean it up.")
+        if notify_admins:
+            await notify_admins(details)
+        else:
+            await destination.send(details)
         logger.info(f"Task {task_id}: end_week {end_week} reached — marked as exhausted.")
         return
 

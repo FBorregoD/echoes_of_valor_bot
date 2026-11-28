@@ -517,14 +517,11 @@ async def _fetch_sheets_by_tourney(tournaments: list[dict]) -> dict:
     return sheets_by_tourney
 
 
-async def _season_over(tournaments: list[dict], task_id: int, auto_week: int,
-                        destination, action: str) -> bool:
+async def _season_over(tournaments: list[dict], auto_week: int) -> bool:
     """
-    For auto-advancing tasks, check whether `auto_week` itself (the week
-    this fire is about to post/notify for) has any matches at all. If not,
-    this is the fire *after* the last real week — mark the task exhausted
-    and notify, instead of posting an empty result. Returns True if the
-    season was found over (caller should skip the action).
+    For auto-advancing tasks: True if `auto_week` itself (the week this fire
+    is about to post/notify for) has no matches at all — this is the fire
+    *after* the last real week, so the season is over.
 
     `tournaments` should be scoped to whatever the task actually covers
     (e.g. just its own tournament for post_divisions) — passing every
@@ -534,20 +531,12 @@ async def _season_over(tournaments: list[dict], task_id: int, auto_week: int,
     season lengths.
     """
     sheets_by_tourney = await _fetch_sheets_by_tourney(tournaments)
-    has_matches = any(
+    return not any(
         week_has_matches(sheets, auto_week) for sheets in sheets_by_tourney.values()
     )
-    if has_matches:
-        return False
 
-    update_current_week(task_id, -1)
-    await destination.send(
-        f"🏁 **Season complete!** No matches found for week {auto_week}. "
-        f"Scheduled task `{action}` (ID {task_id}) will no longer run automatically. "
-        f"Use `!schedule remove {task_id}` to clean it up if needed."
-    )
-    logger.info(f"Task {task_id}: no week {auto_week} — marked as exhausted.")
-    return True
+
+SEASON_OVER_LABEL = "Season over · Matches left"
 
 
 # ── Scheduler Cog ──────────────────────────────────────────────────────────────
@@ -562,6 +551,38 @@ class SchedulerCog(commands.Cog):
 
     def cog_unload(self):
         self._check_loop.cancel()
+
+    async def _notify_admins(self, text: str):
+        """DM `text` to the alert list (config alert_user_ids, falling back to
+        admin_user_ids): task details that don't belong in a public channel."""
+        config = getattr(self.bot, "config", {}) or {}
+        recipients = (config.get("alert_user_ids") or config.get("admin_user_ids")
+                      or getattr(self.bot, "admin_user_ids", []) or [])
+        for user_id in recipients:
+            try:
+                user = await self.bot.fetch_user(user_id)
+                await user.send(text)
+            except Exception as e:
+                logger.warning(f"Could not DM admin {user_id}: {e}")
+
+    async def _report(self, task_id: int, action: str, text: str):
+        """A task's run summary ("Posted to N divisions", ...): for the admins
+        by DM, never in the channel the task posts to."""
+        logger.info(f"Task {task_id} ({action}): {text}")
+        await self._notify_admins(f"Scheduled task `{action}` (ID {task_id}): {text}")
+
+    async def _end_season(self, task_id: int, action: str, auto_week: int,
+                          destination, public_text: str, extra: str = ""):
+        """Mark the task exhausted, tell the channel the season is over and
+        DM the admins the task details."""
+        update_current_week(task_id, -1)
+        logger.info(f"Task {task_id}: no week {auto_week} — marked as exhausted.")
+        await destination.send(public_text)
+        await self._notify_admins(
+            f"🏁 Season over: week {auto_week} has no matches, so scheduled task `{action}` "
+            f"(ID {task_id}) will no longer run. Use `!schedule remove {task_id}` to clean it up."
+            + extra
+        )
 
     @tasks.loop(minutes=1)
     async def _check_loop(self):
@@ -643,9 +664,37 @@ class SchedulerCog(commands.Cog):
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}", exc_info=True)
             try:
-                await destination.send(f"❌ Scheduled task `{row['action']}` (ID {task_id}) failed: {e}")
+                await self._notify_admins(f"❌ Scheduled task `{row['action']}` (ID {task_id}) failed: {e}")
             except Exception:
                 pass
+
+    async def _post_season_leftovers(self, task_id: int, action: str, auto_week: int,
+                                     destination, params: dict, tourney: dict | None):
+        """Season-end fire of post_divisions: every division thread with
+        matches still unfinished gets them (once), then the season is closed."""
+        cog = self.cog_ref
+        success, not_found, errors = await run_post_divisions(
+            destination=destination,
+            tournaments=cog.tournaments,
+            default_week=cog.default_week,
+            tournament_alias=params.get("tournament", "MA"),
+            week_raw=auto_week,
+            force_refresh=True,
+            week_label=SEASON_OVER_LABEL,
+        )
+        name = tourney['name'] if tourney else "The season"
+        public = f"🏁 **{name} — the season is over!**"
+        if success:
+            public += ("\nSome matches are still unfinished: each division's thread lists them. "
+                       "Please play and report them as soon as you can.")
+        else:
+            public += "\nEvery match is finished. Thanks for playing!"
+        extra = f"\nDivisions with matches left: {success}."
+        if not_found:
+            extra += f"\n⚠️ Threads not found: {', '.join(not_found)}"
+        if errors:
+            extra += f"\n❌ Errors: {', '.join(errors)}"
+        await self._end_season(task_id, action, auto_week, destination, public, extra)
 
     async def _dispatch(self, action: str, destination, params: dict,
                         task_id: int, auto_week: int | None, end_week: int | None = None):
@@ -656,7 +705,9 @@ class SchedulerCog(commands.Cog):
             if auto_week is not None:
                 tourney = find_tournament(cog.tournaments, params.get("tournament", "MA"))
                 season_tournaments = [tourney] if tourney else cog.tournaments
-                if await _season_over(season_tournaments, task_id, auto_week, destination, action):
+                if await _season_over(season_tournaments, auto_week):
+                    await self._post_season_leftovers(task_id, action, auto_week, destination,
+                                                      params, tourney)
                     return
 
             success, not_found, errors = await run_post_divisions(
@@ -672,13 +723,13 @@ class SchedulerCog(commands.Cog):
                 result += f"\n⚠️ Threads not found: {', '.join(not_found)}"
             if errors:
                 result += f"\n❌ Errors: {', '.join(errors)}"
-            await destination.send(result)
+            await self._report(task_id, action, result)
 
             if auto_week is not None:
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
                     destination=destination, action_name=action,
-                    end_week=end_week,
+                    end_week=end_week, notify_admins=self._notify_admins,
                 )
 
         elif action == "notify_all":
@@ -686,7 +737,9 @@ class SchedulerCog(commands.Cog):
             # matches across every configured tournament (see run_notify_all),
             # so season-over here is intentionally checked across all of them
             # too, unlike post_divisions above which is scoped to its own task.
-            if auto_week is not None and await _season_over(cog.tournaments, task_id, auto_week, destination, action):
+            if auto_week is not None and await _season_over(cog.tournaments, auto_week):
+                await self._end_season(task_id, action, auto_week, destination,
+                                       "🏁 **The season is over!** No more match reminders.")
                 return
 
             success, total = await run_notify_all(
@@ -698,13 +751,13 @@ class SchedulerCog(commands.Cog):
                 week_raw=params.get("week", "default"),
                 force_refresh=True,
             )
-            await destination.send(f"✅ DMs sent to {success}/{total} players.")
+            await self._report(task_id, action, f"✅ DMs sent to {success}/{total} players.")
 
             if auto_week is not None:
                 await advance_auto_week(
                     task_id=task_id, current_week=auto_week,
                     destination=destination, action_name=action,
-                    end_week=end_week,
+                    end_week=end_week, notify_admins=self._notify_admins,
                 )
 
         elif action == "standings":
@@ -719,7 +772,7 @@ class SchedulerCog(commands.Cog):
                 result += f"\n⚠️ Threads not found: {', '.join(not_found)}"
             if errors:
                 result += f"\n❌ Errors: {', '.join(errors)}"
-            await destination.send(result)
+            await self._report(task_id, action, result)
 
         elif action == "report_misreported":
             sent, errors = await run_report_misreported(
@@ -757,7 +810,7 @@ class SchedulerCog(commands.Cog):
             result = f"✅ Notified {sent} subscriber(s)."
             if failed:
                 result += f" ⚠️ {failed} failed (DMs disabled or error)."
-            await destination.send(result)
+            await self._report(task_id, action, result)
 
         elif action == "usage_report":
             # Admin-only data: DMed to the alert list, never posted in the channel.

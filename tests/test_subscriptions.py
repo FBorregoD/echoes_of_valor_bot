@@ -412,8 +412,14 @@ def _make_fake_self():
     cog_ref = MagicMock()
     cog_ref._build_and_send_player_matches = AsyncMock()
     cog_ref._build_and_send_player_summary = AsyncMock()
-    fake_self = SimpleNamespace(cog_ref=cog_ref, bot=MagicMock())
+    # _report: the run summary, DMed to the admins (not posted in the channel)
+    fake_self = SimpleNamespace(cog_ref=cog_ref, bot=MagicMock(), _report=AsyncMock())
     return fake_self, cog_ref
+
+
+def _summary(fake_self):
+    fake_self._report.assert_awaited_once()
+    return fake_self._report.call_args[0][2]
 
 
 @pytest.mark.asyncio
@@ -440,8 +446,8 @@ async def test_dispatch_notify_subscribed_players_sends_to_each_subscriber():
     assert first_call_args[2] is False  # text_flag=0 -> False
     second_call_args = cog_ref._build_and_send_player_matches.await_args_list[1].args
     assert second_call_args[2] is True  # text_flag=1 -> True
-    destination.send.assert_awaited_once()
-    assert "Notified 2 subscriber(s)" in destination.send.call_args[0][0]
+    destination.send.assert_not_awaited()
+    assert "Notified 2 subscriber(s)" in _summary(fake_self)
 
     # Each subscriber also gets a !summary appended after their matches.
     assert cog_ref._build_and_send_player_summary.await_count == 2
@@ -476,7 +482,7 @@ async def test_dispatch_notify_subscribed_players_continues_after_one_failure():
 
     assert cog_ref._build_and_send_player_matches.await_count == 1
     assert cog_ref._build_and_send_player_summary.await_count == 1
-    msg = destination.send.call_args[0][0]
+    msg = _summary(fake_self)
     assert "Notified 1 subscriber(s)" in msg
     assert "1 failed" in msg
 
@@ -494,7 +500,7 @@ async def test_dispatch_notify_subscribed_players_with_no_subscribers():
 
     cog_ref._build_and_send_player_matches.assert_not_awaited()
     cog_ref._build_and_send_player_summary.assert_not_awaited()
-    assert "Notified 0 subscriber(s)" in destination.send.call_args[0][0]
+    assert "Notified 0 subscriber(s)" in _summary(fake_self)
 
 
 @pytest.mark.asyncio
