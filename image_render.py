@@ -584,7 +584,8 @@ def render_player_matches(
             draw.rectangle([0, y, width, y + sec_h], fill=BG_HEAD)
             draw.rectangle([0, y, _s(4), y + sec_h], fill=ACCENT)
             draw.text((PAD() + _s(8), y + _s(4)),
-                     f"{t.get('tourney_name', 'Unknown')} — 🏁 Season complete",
+                     # no emoji: the image fonts have none (it'd draw a box)
+                     f"{t.get('tourney_name', 'Unknown')} — Season complete",
                      font=_f('bold', BASE()), fill=TEXT_WHITE)
             y += sec_h
             continue

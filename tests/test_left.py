@@ -96,3 +96,21 @@ def test_match_between_two_dropped_players_is_closed():
     scheduler.add_player_flag("Lunapig", None, "drop", set_by=1)
     assert _pairs(get_unfinished_matches(apply_drops(SHEETS), 3)) == [
         (3, "TheJeb - Thornenach", "Tuff - Calcium")]
+
+
+def test_week_after_the_last_lists_only_the_leftovers():
+    """Season-end post_divisions asks for the week after the last one: no
+    current matches, every unfinished one as pending, under its own label."""
+    from match_utils import get_division_matches
+    from tournament_actions import build_division_image
+    current, pending = get_division_matches(SHEETS, "GOLD", 4)
+    assert current == []
+    # (Scorium v Lunapig also played in week 1 here; pairings list a pair
+    # once per tournament, and real schedules never repeat a pair.)
+    assert {(m["week"], m["player1"], m["player2"]) for m in pending} == {
+        (2, "TheJeb - Thornenach", "Lunapig - Felice"),
+        (3, "TheJeb - Thornenach", "Tuff - Calcium"),
+    }
+    image = build_division_image("Echoes of Valor", "GOLD", 4, current, pending, {},
+                                 week_label="Season over · Matches left")
+    assert image and image[:4] == b"\x89PNG"

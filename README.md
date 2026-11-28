@@ -69,6 +69,8 @@ Admin status is controlled by `admin_user_ids` in the config file. `!help` (or `
 !schedule remove tournament=EoV
 ```
 
+An auto-advancing `post_divisions` task (one with `week=N`) ends the season on its first fire after the last week: every division thread that still has unfinished matches gets them once (image labelled "Season over · Matches left"), the channel gets a short "the season is over" note, and the task details (its ID, how to remove it) are DMed to the alert list instead of posted in the channel. `notify_all` stops the same way, without the leftovers.
+
 ### Admin — debug
 
 | Command | Description |

@@ -23,7 +23,25 @@ def make_fake_self(tournaments, default_week=2):
     cog_ref = MagicMock()
     cog_ref.tournaments = tournaments
     cog_ref.default_week = default_week
-    return SimpleNamespace(cog_ref=cog_ref, bot=MagicMock())
+    admin = MagicMock()
+    admin.send = AsyncMock()
+    bot = MagicMock()
+    bot.config = {"admin_user_ids": [99]}
+    bot.fetch_user = AsyncMock(return_value=admin)
+    fake = SimpleNamespace(cog_ref=cog_ref, bot=bot, admin=admin)
+    for name in ("_notify_admins", "_report", "_end_season", "_post_season_leftovers"):
+        setattr(fake, name, getattr(SchedulerCog, name).__get__(fake))
+    return fake
+
+
+def assert_season_over_message(fake_self, destination):
+    """The channel only hears that the season is over; the task details
+    (ID, how to remove it) go to the admins by DM."""
+    public = destination.send.call_args[0][0]
+    assert "the season is over" in public.lower()
+    assert "ID" not in public and "schedule remove" not in public
+    fake_self.admin.send.assert_awaited_once()
+    assert "!schedule remove 1" in fake_self.admin.send.call_args[0][0]
 
 
 def sheets_with_week(week: int) -> dict:
@@ -110,8 +128,10 @@ async def test_dispatch_post_divisions_still_advances_week_correctly():
             {"tournament": "MA", "week": "3"}, task_id=1, auto_week=3, end_week=8,
         )
 
-    destination.send.assert_awaited_once()
-    assert "Posted to 3 divisions" in destination.send.call_args[0][0]
+    # The run summary is for the admins by DM, not for the public channel.
+    destination.send.assert_not_awaited()
+    fake_self.admin.send.assert_awaited_once()
+    assert "Posted to 3 divisions" in fake_self.admin.send.call_args[0][0]
     mock_advance.assert_awaited_once()
     _, kwargs = mock_advance.call_args
     assert kwargs["task_id"] == 1
@@ -133,7 +153,7 @@ async def test_dispatch_post_divisions_marks_season_over_on_first_empty_week():
     destination = MagicMock()
     destination.send = AsyncMock()
 
-    with patch("scheduler.run_post_divisions", new=AsyncMock()) as mock_post, \
+    with patch("scheduler.run_post_divisions", new=AsyncMock(return_value=(2, [], []))) as mock_post, \
          patch("scheduler.advance_auto_week", new=AsyncMock()) as mock_advance, \
          patch("scheduler.update_current_week") as mock_update, \
          patch("match_utils.get_tournament_sheets", return_value=sheets_with_week(3)):
@@ -142,11 +162,16 @@ async def test_dispatch_post_divisions_marks_season_over_on_first_empty_week():
             {"tournament": "MA", "week": "4"}, task_id=1, auto_week=4, end_week=None,
         )
 
-    mock_post.assert_not_awaited()
+    # Only the leftovers are posted (week 4 = after the last week, so every
+    # division lists just its unfinished matches), under the season-over label.
+    mock_post.assert_awaited_once()
+    assert mock_post.call_args.kwargs["week_raw"] == 4
+    assert mock_post.call_args.kwargs["week_label"] == "Season over · Matches left"
     mock_advance.assert_not_awaited()
     mock_update.assert_called_once_with(1, -1)
     destination.send.assert_awaited_once()
-    assert "Season complete" in destination.send.call_args[0][0]
+    assert_season_over_message(fake_self, destination)
+    assert "still unfinished" in destination.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -201,7 +226,7 @@ async def test_dispatch_post_divisions_season_over_scoped_to_own_tournament():
             return sheets_with_week(3)
         return sheets_with_week(4)
 
-    with patch("scheduler.run_post_divisions", new=AsyncMock()) as mock_post, \
+    with patch("scheduler.run_post_divisions", new=AsyncMock(return_value=(2, [], []))) as mock_post, \
          patch("scheduler.advance_auto_week", new=AsyncMock()) as mock_advance, \
          patch("scheduler.update_current_week") as mock_update, \
          patch("match_utils.get_tournament_sheets", side_effect=fake_fetch):
@@ -211,11 +236,16 @@ async def test_dispatch_post_divisions_season_over_scoped_to_own_tournament():
         )
 
     # MA's own task must be marked exhausted, ignoring EoV's week-4 data.
-    mock_post.assert_not_awaited()
+    # Only the leftovers are posted (week 4 = after the last week, so every
+    # division lists just its unfinished matches), under the season-over label.
+    mock_post.assert_awaited_once()
+    assert mock_post.call_args.kwargs["week_raw"] == 4
+    assert mock_post.call_args.kwargs["week_label"] == "Season over · Matches left"
     mock_advance.assert_not_awaited()
     mock_update.assert_called_once_with(1, -1)
     destination.send.assert_awaited_once()
-    assert "Season complete" in destination.send.call_args[0][0]
+    assert_season_over_message(fake_self, destination)
+    assert "still unfinished" in destination.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -256,3 +286,61 @@ async def test_dispatch_notify_all_season_over_checks_all_tournaments():
     mock_notify.assert_awaited_once()
     mock_advance.assert_awaited_once()
     mock_update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_season_over_with_every_match_finished_thanks_players():
+    tournaments = [{"name": "Echoes of Valor", "alias": "EoV", "url": "fake_url"}]
+    fake_self = make_fake_self(tournaments)
+    destination = MagicMock()
+    destination.send = AsyncMock()
+
+    with patch("scheduler.run_post_divisions", new=AsyncMock(return_value=(0, [], []))),          patch("scheduler.update_current_week"),          patch("match_utils.get_tournament_sheets", return_value=sheets_with_week(3)):
+        await SchedulerCog._dispatch(
+            fake_self, "post_divisions", destination,
+            {"tournament": "EoV", "week": "4"}, task_id=1, auto_week=4, end_week=None,
+        )
+
+    public = destination.send.call_args[0][0]
+    assert "Echoes of Valor — the season is over!" in public
+    assert "Every match is finished" in public
+    assert_season_over_message(fake_self, destination)
+
+
+@pytest.mark.asyncio
+async def test_notify_all_season_over_keeps_task_details_out_of_the_channel():
+    tournaments = [{"name": "Echoes of Valor", "alias": "EoV", "url": "fake_url"}]
+    fake_self = make_fake_self(tournaments)
+    destination = MagicMock()
+    destination.send = AsyncMock()
+
+    with patch("scheduler.run_notify_all", new=AsyncMock()) as mock_notify,          patch("scheduler.update_current_week") as mock_update,          patch("match_utils.get_tournament_sheets", return_value=sheets_with_week(3)):
+        await SchedulerCog._dispatch(
+            fake_self, "notify_all", destination,
+            {"week": "4"}, task_id=1, auto_week=4, end_week=None,
+        )
+
+    mock_notify.assert_not_awaited()
+    mock_update.assert_called_once_with(1, -1)
+    assert_season_over_message(fake_self, destination)
+
+
+@pytest.mark.asyncio
+async def test_failed_task_is_reported_to_admins_not_the_channel():
+    fake_self = make_fake_self([{"name": "Echoes of Valor", "alias": "EoV", "url": "u"}])
+    destination = MagicMock()
+    destination.send = AsyncMock()
+    guild = MagicMock()
+    guild.get_thread.return_value = None
+    guild.get_channel.return_value = destination
+    fake_self.bot.get_guild.return_value = guild
+    fake_self.bot.channel_index = {}
+    fake_self._dispatch = AsyncMock(side_effect=RuntimeError("sheet down"))
+    row = {"guild_id": 1, "thread_id": None, "channel_id": 2, "params": "{}", "id": 7,
+           "current_week": None, "end_week": None, "action": "standings"}
+
+    with patch("scheduler._is_channel_allowed", return_value=True):
+        await SchedulerCog._fire(fake_self, row)
+
+    destination.send.assert_not_awaited()
+    assert "(ID 7) failed: sheet down" in fake_self.admin.send.call_args[0][0]
